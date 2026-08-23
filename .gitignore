@@ -1,0 +1,8 @@
+build/student-app
+build/test-support
+build/test-stack
+build/logs/
+build/captures/
+build/vm/
+*.o
+*.pcapng
