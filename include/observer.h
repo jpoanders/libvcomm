@@ -113,28 +113,29 @@ protected:
 template <typename T, typename C>
 void Conditionally_Data_Observed<T, C>::attach(Observer * o, const C & c)
 {
-    // TODO(joao): registrar o observador.
-    // Dica: o rank do observador precisa valer c para que notify() o encontre.
-    (void)o;
-    (void)c;
+    o->rank(c);
+    _observers.insert(o);
 }
 
 template <typename T, typename C>
 void Conditionally_Data_Observed<T, C>::detach(Observer * o, const C & c)
 {
-    // TODO(joao): remover o observador.
-    (void)o;
     (void)c;
+    _observers.remove(o);
 }
 
 template <typename T, typename C>
 bool Conditionally_Data_Observed<T, C>::notify(const C & c, T * d)
 {
-    // TODO(joao): percorrer _observers, chamar update(c, d) em quem tiver
-    // rank() == c, e devolver se alguém foi notificado.
-    (void)c;
-    (void)d;
-    return false;
+    bool notified = false;
+    for (typename Observers::Iterator obs = _observers.begin();
+         obs != _observers.end(); obs++) {
+        if (obs->rank() == c) {
+            obs->update(c, d);
+            notified = true;
+        }
+    }
+    return notified;
 }
 
 // -----------------------------------------------------------------------------

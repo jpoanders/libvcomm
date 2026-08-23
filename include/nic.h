@@ -1,6 +1,8 @@
 #ifndef LIBVCOMM_NIC_H
 #define LIBVCOMM_NIC_H
 
+#include <arpa/inet.h>
+
 #include "traits.h"
 #include "ethernet.h"
 #include "buffer.h"
@@ -154,15 +156,16 @@ template <typename Engine>
 typename NIC<Engine>::Buffer *
 NIC<Engine>::alloc(Address dst, Protocol_Number prot, unsigned int size)
 {
-    // TODO(joao): varrer _buffer[] procurando um com lock() == true.
-    //   Achou: preencher frame()->dst = dst, ->src = address(), ->prot,
-    //          size(HEADER_SIZE + size), devolver o ponteiro.
-    //   Não achou: devolver 0 (pool esgotado).
-    // Cuidado com o byte order do EtherType no cabeçalho: htons na hora de
-    // escrever no frame, se você guarda em host order na biblioteca.
-    (void)dst;
-    (void)prot;
-    (void)size;
+    for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
+        if (_buffer[i].lock()) {
+            Ethernet::Frame * f = _buffer[i].frame();
+            f->dst  = dst;
+            f->src  = Engine::engine_address();
+            f->prot = htons(prot);
+            _buffer[i].size(Ethernet::HEADER_SIZE + size);
+            return &_buffer[i];
+        }
+    }
     return 0;
 }
 
@@ -176,9 +179,8 @@ template <typename Engine> int NIC<Engine>::send(Buffer * buf)
 
 template <typename Engine> void NIC<Engine>::free(Buffer * buf)
 {
-    // TODO(joao): buf->unlock().  Tolerar buf == 0 — chamadas de erro passam
-    // por aqui.
-    (void)buf;
+    if (buf)
+        buf->unlock();
 }
 
 template <typename Engine>
