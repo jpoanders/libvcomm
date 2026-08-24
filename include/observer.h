@@ -4,60 +4,6 @@
 #include "list.h"
 #include "sem.h"
 
-// =============================================================================
-// Observer X Observed — the PDF's "Fundamentals".
-//
-// Two families, and the difference between them is the reason both exist:
-//
-//   Conditional_*  -> SYNCHRONOUS, conditional notification.  update() runs in
-//                     the notifier's context (the SIGNAL HANDLER).  It blocks
-//                     nobody.  This is how the NIC tells the Protocol and how
-//                     the Protocol tells the Communicator.
-//
-//   Concurrent_*   -> notification DECOUPLED by a semaphore.  update() only
-//                     enqueues and does v(); whoever called updated() was
-//                     asleep in p() and wakes up.  This is the boundary between
-//                     the handler and the application thread.
-//
-// The complete path of a message:
-//
-//   handler:   Engine::drain() -> recvfrom() -> NIC::handle() ->
-//   Observed::notify(prot,buf)
-//                -> Protocol::update() -> Observed::notify(port,buf)
-//                -> Communicator::update() -> Concurrent_Observer::update()
-//                -> _semaphore.v()          <<< the handler ends here
-//   app thread: Communicator::receive() -> Concurrent_Observer::updated()
-//                -> _semaphore.p()          <<< wakes up holding the buffer
-//
-// -----------------------------------------------------------------------------
-// WHY TWO FAMILIES AND NOT ONE  (panel answer)
-// -----------------------------------------------------------------------------
-// Because the top of the chain runs in INTERRUPT CONTEXT.  In EPOS, handle() is
-// called from the NIC's hardware interrupt handler; here it is the POSIX
-// analogue, a signal handler.  This is not an implementation detail — it is
-// what forces the entire design:
-//
-//   * Conditional_* must not block -> whoever blocks inside a handler freezes
-//     the thread that was interrupted, which has nothing to do with any of it;
-//   * Concurrent_* uses a semaphore -> sem_post(3) is one of the few
-//     async-signal-safe functions (man 7 signal-safety).  That is no accident:
-//     the chain was designed to be legal from within a handler.
-//
-// EVERY function reachable from notify() is subject to that restriction.  No
-// printf/stdio, no malloc/new, no std::mutex, no std::string.  That is why
-// list.h is lock-free and allocation-free, and why the Buffer pool is
-// preallocated.
-// =============================================================================
-
-// -----------------------------------------------------------------------------
-// Conditional_Data_Observer<T, C> — pure interface.  Whoever wants to be
-// notified implements update().
-//
-// The rank is the CONDITION: the value the observer is waiting for.  For the
-// NIC the rank is the EtherType; for the Protocol it is the Port.  notify(c, d)
-// only calls those whose rank == c.  That, and only that, is what "conditional"
-// means here.
-// -----------------------------------------------------------------------------
 template <typename T, typename C = void> class Conditional_Data_Observer
 {
 public:
@@ -77,12 +23,6 @@ protected:
     C _rank;
 };
 
-// -----------------------------------------------------------------------------
-// Conditionally_Data_Observed<T, C> — the observed side.
-//
-// >>> YOUR THREE METHODS.  Start here: they are the cheapest ~15 lines in the
-// >>> project and they unblock NIC and Protocol at once.
-// -----------------------------------------------------------------------------
 template <typename T, typename C = void> class Conditionally_Data_Observed
 {
 public:
@@ -92,20 +32,10 @@ public:
     Conditionally_Data_Observed() {}
     virtual ~Conditionally_Data_Observed() {}
 
-    // Registers an observer interested in condition c.
-    // Contract: after attach(o, c), every notify(c, d) must call
-    // o->update(c, d).
     void attach(Observer * o, const C & c);
 
-    // Removes the observer.  Contract: after detach(o, c), o is never called
-    // again.  Called from Protocol's/Communicator's destructor — if it fails,
-    // notify() calls a dead object.
     void detach(Observer * o, const C & c);
 
-    // Delivers d to ALL observers whose rank matches c.
-    // Contract: returns true if at least one observer was notified.
-    // The false is what tells the NIC "nobody wanted this frame, you can
-    // release the buffer".
     bool notify(const C & c, T * d);
 
 protected:
@@ -122,7 +52,6 @@ void Conditionally_Data_Observed<T, C>::attach(Observer * o, const C & c)
 template <typename T, typename C>
 void Conditionally_Data_Observed<T, C>::detach(Observer * o, const C & c)
 {
-    (void)c;
     _observers.remove(o);
 }
 
