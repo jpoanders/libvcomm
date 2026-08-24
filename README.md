@@ -26,7 +26,7 @@ Saber recitar isto é metade da apresentação:
       |                                   |
       v                          [ barramento multicast do QEMU ]
    Engine                                 |
-      |                    [SIGRTMIN] Engine::drain() -> recvfrom()
+      |                      [SIGIO] Engine::drain() -> recvfrom()
       v                                   |
   raw socket                     NIC::handle()  -> copia para um buffer
                                           |

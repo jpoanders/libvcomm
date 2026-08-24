@@ -26,7 +26,8 @@
 // -----------------------------------------------------------------------------
 // A recepção NÃO usa thread.  O enunciado é explícito:
 //
-//   "os eventos de recepção de pacotes pelo kernel do SO devem ser imediatamente
+//   "os eventos de recepção de pacotes pelo kernel do SO devem ser
+//   imediatamente
 //    propagados às camadas superiores da pilha de protocolos.  Essa propagação
 //    pode se dar tanto através da implementação de módulos específicos do
 //    protocolo para o kernel quanto através de SINAIS POSIX."
@@ -42,15 +43,18 @@
 //     das poucas funções async-signal-safe (man 7 signal-safety);
 //   * o pool de Buffers é pré-alocado                      -> malloc não é.
 //
-// O mecanismo, em três fcntl:
+// O mecanismo, em dois fcntl:
 //
 //   fcntl(fd, F_SETOWN, getpid())            quem recebe o sinal
-//   fcntl(fd, F_SETSIG, signo)               QUAL sinal (use um de tempo real)
 //   fcntl(fd, F_SETFL, ... | O_ASYNC | O_NONBLOCK)
 //
-// Por que um sinal de TEMPO REAL (SIGRTMIN+n) e não SIGIO: sinais padrão não
-// enfileiram — dois frames em rajada geram um sinal só.  Os de tempo real
-// enfileiram, e com SA_SIGINFO você ainda recebe si_fd (man 2 fcntl, F_SETSIG).
+// O sinal é SIGIO, o default do O_ASYNC — sem F_SETSIG.  A objeção conhecida é
+// que sinal padrão NÃO enfileira: dois frames em rajada geram um sinal só.  Não
+// importa aqui, porque a garantia de entrega é o LAÇO de drenagem, não a
+// contagem de sinais — um único SIGIO manda drain() esvaziar a fila inteira.
+// Sinal de tempo real (SIGRTMIN+n, com F_SETSIG e SA_SIGINFO) só passaria a
+// valer a pena se houvesse mais de um descritor a distinguir por si_fd.
+// Ver doc/decisoes.md.
 //
 // Por que O_NONBLOCK: o handler tem que DRENAR — chamar recvfrom em laço até
 // EAGAIN — porque vários frames podem ter chegado antes de ele rodar.  Sem
@@ -61,7 +65,7 @@
 class Raw_Socket_Engine
 {
 protected:
-    typedef Ethernet::Address  Address;
+    typedef Ethernet::Address Address;
     typedef Ethernet::Protocol Protocol;
 
     // Abre o raw socket em `iface` filtrando por `prot`.
@@ -70,27 +74,28 @@ protected:
     // construtor NÃO lança exceção e NÃO chama exit() — quem constrói decide o
     // que fazer com a falha.
     //
-    // NÃO arma a recepção.  Motivo: handle() é virtual e a classe derivada (NIC)
-    // ainda não terminou de construir neste ponto.  Pior que antes, aliás: com
-    // sinal, um frame que chegasse aqui chamaria um virtual puro em objeto
-    // meio-construído.  Quem chama engine_start() é o construtor da NIC, no fim.
+    // NÃO arma a recepção.  Motivo: handle() é virtual e a classe derivada
+    // (NIC) ainda não terminou de construir neste ponto.  Pior que antes,
+    // aliás: com sinal, um frame que chegasse aqui chamaria um virtual puro em
+    // objeto meio-construído.  Quem chama engine_start() é o construtor da NIC,
+    // no fim.
     Raw_Socket_Engine(const char * iface, Protocol prot);
 
     virtual ~Raw_Socket_Engine();
 
-    Raw_Socket_Engine(const Raw_Socket_Engine &)             = delete;
+    Raw_Socket_Engine(const Raw_Socket_Engine &) = delete;
     Raw_Socket_Engine & operator=(const Raw_Socket_Engine &) = delete;
 
     // -------------------------------------------------------------------------
-    // Envio.  `frame` já vem montado por completo (dst, src, EtherType e payload)
-    // e `size` é o total em bytes, cabeçalho incluído.
+    // Envio.  `frame` já vem montado por completo (dst, src, EtherType e
+    // payload) e `size` é o total em bytes, cabeçalho incluído.
     //
     // Contrato: devolve o número de bytes entregues ao kernel, ou -1 com errno
     // preservado.  Não escreve em stdout — quem loga é a camada de cima.
     //
     // Roda na thread da aplicação, fora do handler.  Só que ele pode ser
-    // INTERROMPIDO por um: um frame pode chegar no meio do seu sendto.  Tudo que
-    // engine_send e o handler compartilharem precisa aguentar isso.
+    // INTERROMPIDO por um: um frame pode chegar no meio do seu sendto.  Tudo
+    // que engine_send e o handler compartilharem precisa aguentar isso.
     // -------------------------------------------------------------------------
     int engine_send(const Ethernet::Frame * frame, unsigned int size);
 
@@ -126,7 +131,8 @@ protected:
     //
     // >>> RODA DENTRO DO SIGNAL HANDLER.  Esta linha é a mais importante do
     // >>> arquivo, e vale para TUDO que handle() alcançar — NIC::handle, alloc,
-    // >>> notify, Protocol::update, Communicator::update.  Toda essa cadeia está
+    // >>> notify, Protocol::update, Communicator::update.  Toda essa cadeia
+    // está
     // >>> sujeita a async-signal-safety (man 7 signal-safety):
     // >>>
     // >>>   PODE:    recvfrom, write, sem_post, atômicos lock-free,
@@ -135,7 +141,8 @@ protected:
     // >>>            std::string, std::cout, exceções
     // >>>
     // >>> printf é o que vai te pegar: é a primeira coisa que se quer fazer ao
-    // >>> receber uma mensagem.  Use write(2) — está na lista — ou guarde o dado
+    // >>> receber uma mensagem.  Use write(2) — está na lista — ou guarde o
+    // dado
     // >>> e imprima no laço principal.
     //
     // Contrato: `frame` aponta para memória da Engine, válida SÓ durante a
@@ -153,7 +160,7 @@ private:
     // processo disputariam o mesmo handler.  Para a Etapa 1 isso não incomoda
     // (um processo = um veículo = uma NIC); na Etapa 2, quando um veículo virar
     // vários processos, é a primeira suposição a revisar.
-    static void signal_handler(int signo, siginfo_t * info, void * ucontext);
+    static void signal_handler(int signo);
     static Raw_Socket_Engine * _instance;
 
     // O laço de drenagem: recvfrom até EAGAIN, filtrando, chamando handle().
@@ -163,12 +170,13 @@ private:
     // -------------------------------------------------------------------------
     // Estado.  Já declarado — você preenche no construtor.
     // -------------------------------------------------------------------------
-    int          _sockfd;      // -1 enquanto inválido
-    unsigned int _ifindex;     // if_nametoindex("eth0")
-    Address      _address;     // MAC real de eth0 (SIOCGIFHWADDR)
-    Protocol     _protocol;    // EtherType, em HOST order
-    int          _signo;       // sinal de tempo real armado no socket
-    volatile sig_atomic_t _armed;   // engine_start() já rodou?
+    int _sockfd;                  // -1 enquanto inválido
+    unsigned int _ifindex;        // if_nametoindex("eth0")
+    Address _address;             // MAC real de eth0 (SIOCGIFHWADDR)
+    Protocol _protocol;           // EtherType, em HOST order
+    volatile sig_atomic_t _armed; // engine_start() já rodou?
+    volatile sig_atomic_t _rx_error;
+    volatile sig_atomic_t _rx_errors;
 
     // Nota: _armed é sig_atomic_t, não bool nem std::atomic<bool>.  É o único
     // tipo que o padrão garante ser seguro compartilhar entre um handler e o

@@ -100,8 +100,8 @@ classe. Uma função estática dá o mesmo resultado sem a cerimônia.
 ### 2.1 Recepção por sinal POSIX, não por thread
 
 **Decisão:** a recepção de frames acontece dentro de um *signal handler*, armado
-com `fcntl(F_SETOWN)` + `fcntl(F_SETSIG, SIGRTMIN)` + `O_ASYNC | O_NONBLOCK` e
-tratado por um `sigaction` com `SA_SIGINFO`. Não há thread de recepção.
+com `fcntl(F_SETOWN)` + `O_ASYNC | O_NONBLOCK` e tratado por um `sigaction` para
+`SIGIO`. Não há thread de recepção.
 
 **Por quê.** É o que o enunciado manda:
 
@@ -120,12 +120,27 @@ POSIX é o sinal. Manter isso preserva a estrutura que a Etapa 2 vai reaproveita
 interrupção; `Concurrent_Observer` usa semáforo porque `sem_post(3)` é
 async-signal-safe; o pool de `Buffer` é pré-alocado porque `malloc` não é.
 
-**Sinal de tempo real, não `SIGIO`.** Sinais padrão não enfileiram: dois frames
-em rajada gerariam um sinal só. Os de tempo real enfileiram, e `SA_SIGINFO`
-ainda entrega `si_fd` (`man 2 fcntl`, `F_SETSIG`).
+**`SIGIO`, não um sinal de tempo real.** Consideramos `fcntl(F_SETSIG, SIGRTMIN)`
+e descartamos. O argumento a favor dos sinais de tempo real é que eles
+enfileiram, enquanto os padrão coalescem — dois frames em rajada podem gerar um
+sinal só. Mas isso **não custa nenhum frame** aqui, porque a garantia real não é
+o sinal e sim o laço de drenagem (abaixo): quando o handler roda, ele recolhe
+tudo que estiver no buffer do kernel.
 
-**`O_NONBLOCK` e drenagem em laço.** O handler chama `recvfrom` repetidamente
-até `EAGAIN`. O sinal é o gatilho; o laço é a garantia. Sair no primeiro frame
+Contra os de tempo real havia um modo de falha a mais. Se a fila de sinais
+enfileirados estourar, *"the kernel reverts to delivering `SIGIO`"* (`man 2
+fcntl`, `F_SETSIG`) — e a ação padrão do `SIGIO` no Linux é **terminar o
+processo** (`man 7 signal`). Usar RT com segurança exigiria tratar `SIGIO`
+**assim mesmo**, como fallback. Indo direto de `SIGIO`, esse caminho não existe.
+
+**O que se perde:** `si_fd`. Sem `F_SETSIG` não-zero o kernel não informa qual
+descritor gerou o evento. Na Etapa 1 há um socket só; a informação seria
+ignorada. Se a Etapa 2 trouxer mais de um descritor por Engine, esta é a decisão
+a revisar.
+
+**`O_NONBLOCK` e drenagem em laço — o mecanismo que sustenta o resto.** O handler
+chama `recvfrom` repetidamente até `EAGAIN`. O sinal é o gatilho; o laço é a
+garantia, e é ele que torna o coalescimento inofensivo. Sair no primeiro frame
 deixaria os demais parados no buffer do kernel até a chegada do próximo — e a
 latência medida viraria ficção.
 
@@ -185,7 +200,7 @@ voltaria em silêncio.
 **Preço:** capacidade fixa. `insert()` devolve `false` quando enche, e isso é
 `Statistics::rx_dropped` — não um erro a esconder.
 
-Verificado empiricamente: produtor num handler de `SIGRTMIN` a 20 kHz,
+Verificado empiricamente: produtor num handler de sinal a 20 kHz,
 consumidor no `main`, 3 s — **58.937 sinais, 176.811 itens, zero perdidos, FIFO
 preservado.**
 
