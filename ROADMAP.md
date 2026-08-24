@@ -1,226 +1,250 @@
-# Roadmap de implementação — libvcomm Etapa 1
+# Implementation roadmap — libvcomm Stage 1
 
-Documento de trabalho, não artefato de banca (o que a banca lê é `doc/`).
-Escrito em 22/08/2026.
-
----
-
-## A restrição que define a ordem
-
-Artur viaja 26–31/08 e o Fröhlich autorizou antecipar. Logo a apresentação é
-**segunda 24 ou terça 25** — dois dias, sendo hoje sábado — **ou** depois de 31/08,
-o que dá dez dias. Enquanto a data não estiver confirmada, o roadmap assume a
-hipótese apertada, porque ela é a única que pode dar errado.
-
-Consequência prática: **o checklist de aceitação não é só C++.** `make` tem que
-rodar a avaliação inteira, a latência tem que sair automaticamente, e diagramas e
-slides têm que estar em `doc/`. Quem gasta os dois dias inteiros na Engine chega na
-banca com uma biblioteca bonita e sem apresentação. As fases 6 e 7 têm bloco
-reservado desde já.
-
-**A linha que separa "tenho o que mostrar" de "não tenho" está no fim da Fase 5.**
+A working document, not a panel artefact (what the panel reads is `doc/`).
+Written on 2026-08-22.
 
 ---
 
-## Dependências
+## The constraint that sets the order
+
+Artur is travelling 26–31 Aug and Fröhlich authorised bringing the date forward.
+So the presentation is either **Monday the 24th or Tuesday the 25th** — two
+days, today being Saturday — **or** after 31 Aug, which gives ten days. While the
+date is unconfirmed, the roadmap assumes the tight hypothesis, because it is the
+only one that can go wrong.
+
+Practical consequence: **the acceptance checklist is not only C++.** `make` has
+to run the whole evaluation, the latency has to come out automatically, and
+diagrams and slides have to be in `doc/`. Whoever spends both entire days on the
+Engine arrives at the panel with a pretty library and no presentation. Phases 6
+and 7 have had a block reserved from the start.
+
+**The line separating "I have something to show" from "I don't" is at the end of
+Phase 5.**
+
+---
+
+## Dependencies
 
 ```mermaid
 flowchart TD
-    F0["Fase 0 — sonda<br/>channel.cpp"] --> F3
-    F1["Fase 1 — Observer<br/>notify/attach/detach"] --> F2["Fase 2 — pool<br/>NIC::alloc/free"]
-    F2 --> F3["Fase 3 — Engine<br/>as syscalls"]
-    F3 --> F4["Fase 4 — marshalling<br/>NIC::send/unmarshal"]
-    F4 --> F5["Fase 5 — Protocol<br/>+ Communicator"]
-    F5 --> F6["Fase 6 — frota<br/>captura, estatística"]
-    F5 --> F7["Fase 7 — doc<br/>diagramas, slides"]
-    F6 --> F8(["make check verde"])
+    F0["Phase 0 — probe<br/>channel.cpp"] --> F3
+    F1["Phase 1 — Observer<br/>notify/attach/detach"] --> F2["Phase 2 — pool<br/>NIC::alloc/free"]
+    F2 --> F3["Phase 3 — Engine<br/>the syscalls"]
+    F3 --> F4["Phase 4 — marshalling<br/>NIC::send/unmarshal"]
+    F4 --> F5["Phase 5 — Protocol<br/>+ Communicator"]
+    F5 --> F6["Phase 6 — fleet<br/>capture, statistics"]
+    F5 --> F7["Phase 7 — docs<br/>diagrams, slides"]
+    F6 --> F8(["make check green"])
     F7 --> F8
 ```
 
-A Fase 0 é paralela às Fases 1–2: se travar no Observer, vá para a sonda e volte.
+Phase 0 runs in parallel with Phases 1–2: if you get stuck on the Observer, go
+to the probe and come back.
 
 ---
 
-## Fase 0 — Sonda de raw socket · ~2 h · descartável
+## Phase 0 — Raw socket probe · ~2 h · throwaway
 
-Termine o `src/channel.cpp` que você já começou: um programa só, sem biblioteca
-nenhuma, que manda de uma VM e recebe na outra.
+Finish the `src/channel.cpp` you already started: a single program, no library
+at all, that sends from one VM and receives on the other.
 
-- **Faça:** `socket` → `if_nametoindex` → `SIOCGIFHWADDR` → `bind` → `sendto` / `recvfrom`.
-  Papel por `argv[1]` (`send` ou `recv`).
-- **Verificação:** VM 1 manda, VM 2 imprime. Duas VMs, `SO2_MCAST` do grupo.
-- **Por que antes da Engine:** são as mesmas cinco syscalls, sem classe, sem sinal,
-  sem pool. Você aprende o mecanismo isolado e depois **porta** para a Engine, em vez
-  de depurar syscall e arquitetura ao mesmo tempo. É a única fase cujo código vai
-  para o lixo — e ainda assim vale o tempo.
-- **Armadilha:** `htons()` no terceiro argumento do `socket()`. Sem ele o kernel
-  filtra por `0xB588` e você não recebe nada, sem erro nenhum.
+- **Do:** `socket` → `if_nametoindex` → `SIOCGIFHWADDR` → `bind` → `sendto` /
+  `recvfrom`. Role from `argv[1]` (`send` or `recv`).
+- **Verification:** VM 1 sends, VM 2 prints. Two VMs, the group's `SO2_MCAST`.
+- **Why before the Engine:** they are the same five syscalls, with no class, no
+  signal, no pool. You learn the mechanism in isolation and then **port** it to
+  the Engine, instead of debugging syscalls and architecture at the same time.
+  It is the only phase whose code goes in the bin — and it is still worth the
+  time.
+- **Trap:** `htons()` on `socket()`'s third argument. Without it the kernel
+  filters by `0xB588` and you receive nothing, with no error at all.
 
-> Se você já provou isso para si mesmo em outra sessão, pule direto para a Fase 1.
-
----
-
-## Fase 1 — Observer · ~1 h · **comece aqui**
-
-`Conditionally_Data_Observed::attach` / `detach` / `notify`, em `include/observer.h`.
-
-- **Verificação:** `make test-stack` — hoje 15 checks e 7 falhas. Esta fase deixa
-  verdes as 4 falhas da seção 1.
-- **Contrato que importa:** `notify()` devolve `false` quando ninguém escutava aquela
-  condição. Esse `false` é o que diz à NIC "pode liberar o buffer". Se você devolver
-  `true` sempre, o vazamento só aparece depois de 32 mensagens — na demo.
-- **Por que primeiro:** é a fase mais barata do projeto e desbloqueia NIC e Protocol
-  ao mesmo tempo. Melhor relação destravamento/hora do roadmap inteiro.
+> If you have already proved this to yourself in another session, skip straight
+> to Phase 1.
 
 ---
 
-## Fase 2 — Pool de buffers · ~1–2 h
+## Phase 1 — Observer · ~1 h · **start here**
 
-`NIC::alloc` e `NIC::free`, em `include/nic.h`.
+`Conditionally_Data_Observed::attach` / `detach` / `notify`, in
+`include/observer.h`.
 
-- **Verificação:** as 3 falhas da seção 3 do `test-stack` ficam verdes e mais 2 checks
-  que hoje nem chegam a rodar aparecem (o bloco dentro do `if(first)`). Você deve
-  terminar com **17 checks**, todos verdes.
-- **Decisão sua:** `alloc()` preenche cabeçalho de **envio**. A recepção precisa de um
-  buffer sem cabeçalho montado — um `alloc_receive()` separado, ou um parâmetro? Decida
-  agora e escreva em `doc/decisoes.md`; a Fase 3 depende disso.
-- **Armadilha:** o teste de exaustão existe de propósito. Pool esgotado devolvendo `0`
-  é comportamento **correto**, não erro fatal.
-
----
-
-## Fase 3 — Engine · ~3–4 h · **a fase de maior risco**
-
-`src/raw_socket_engine.cpp`: passos 3 a 5 (armar o sinal, `drain`, `engine_stop`);
-mais `NIC::handle` em `nic.h`. O construtor e o `engine_send` já estão prontos.
-
-- **A recepção é por SINAL, não por thread** — exigência do enunciado, ver
-  `doc/decisoes.md` §2.1. Os passos comentados no `.cpp` seguem essa ordem.
-- **Verificação intermediária 1:** o construtor imprime o MAC lido; confira contra
-  `ip -br link` **dentro da VM** (no host o `socket(AF_PACKET)` falha com `EPERM`).
-  Não avance sem isso bater.
-- **Verificação intermediária 2:** um `write(2)` no handler prova que ele dispara,
-  antes de você escrever uma linha de `drain()`.
-- **Verificação da fase:** VM 1 manda pela `NIC`, VM 2 recebe e o `handle()` imprime.
-- **A restrição que manda nesta fase:** tudo alcançável a partir de `handle()` roda em
-  contexto de sinal. Nada de `printf`/stdio, `malloc`/`new`, `std::mutex`
-  (`man 7 signal-safety`). O `list.h` já foi reescrito lock-free por causa disso; o seu
-  `NIC::handle` tem que respeitar o mesmo limite.
-- **Ganho:** a pergunta 3 do guia ("how will a blocked receiver terminate cleanly")
-  deixa de existir — não há receptor bloqueado. Desarmar é tirar o `O_ASYNC`. Diga isso
-  na apresentação.
-- **Armadilha nova:** um `Ethernet::Frame` local dentro do handler são 1514 bytes na
-  pilha da thread interrompida, que não é você quem escolheu.
-- **Armadilha medida nesta bancada:** o `virtio-net` do QEMU **não** faz padding para 60
-  bytes. `tamanho = recebido - 14` funciona aqui e quebra em hardware real e na Etapa 2.
-  Se quiser tamanho correto em qualquer meio, ele tem que viajar num campo do
-  `Protocol::Header` — decisão que a Fase 5 vai cobrar.
+- **Verification:** `make test-stack` — the 4 checks in section 1.
+  **Done** (Aug 24): green.
+- **The contract that matters:** `notify()` returns `false` when nobody was
+  listening for that condition. That `false` is what tells the NIC "you can
+  release the buffer". If you always return `true`, the leak only shows up after
+  32 messages — during the demo.
+- **Why first:** it is the cheapest phase in the project and it unblocks NIC and
+  Protocol at the same time. The best unblocking-per-hour ratio in the whole
+  roadmap.
 
 ---
 
-## Fase 4 — Marshalling · ~1–2 h
+## Phase 2 — Buffer pool · ~1–2 h
 
-`NIC::send(Address, prot, data, size)`, `NIC::send(Buffer*)`, `NIC::unmarshal`.
+`NIC::alloc` and `NIC::free`, in `include/nic.h`.
 
-- **Verificação:** escreva o teste de ida-e-volta que deixei como TODO no item 4 do
-  `tests/test_stack.cpp`. Monta com `alloc()`, passa por `unmarshal()`, confere que
-  `src`, `dst` e os bytes voltam idênticos.
-- **Por que vale o teste:** é ele que pega erro de byte order e de offset de cabeçalho
-  **no host, em segundos**, em vez de com tshark às duas da manhã.
-
----
-
-## Fase 5 — Protocol + Communicator · ~2–3 h · **a linha da demo**
-
-`include/protocol.h` e `include/communicator.h`.
-
-- **Verificação:** cinco VMs. VM 1 emite, VMs 2–5 imprimem `RESULT ... OK`. Isso fecha
-  o item "quatro receptores provam a recepção de um emissor" do checklist.
-- **Armadilha do PDF:** `Communicator::receive()` — o enunciado passa `message->size()`
-  como capacidade. Numa mensagem recém-construída isso é **0** e você recebe zero bytes
-  para sempre, sem erro. Capacidade na entrada, tamanho recebido na saída, campos
-  diferentes.
-- **A partir daqui você tem o que mostrar.** Se o tempo acabar depois desta fase, veja
-  "Corte de emergência".
+- **Verification:** section 3 of `test-stack`, including the checks inside the
+  `if(first)` that only run once `alloc()` returns a buffer.
+  **Done** (Aug 24): green.
+- **Your decision:** `alloc()` fills in a **send** header. Reception needs a
+  buffer without a built header — a separate `alloc_receive()`, or a parameter?
+  Decide now and write it in `doc/design-decisions.md`; Phase 3 depends on it.
+- **Trap:** the exhaustion test exists on purpose. An exhausted pool returning
+  `0` is **correct** behaviour, not a fatal error.
 
 ---
 
-## Fase 6 — Frota, captura, estatística · ~3–4 h
+## Phase 3 — Engine · ~3–4 h · **the highest-risk phase**
 
-`scripts/run-fleet.sh`, `capture.sh`, `analyze-capture.sh`, `install-initramfs.sh`,
-e trocar o `.DEFAULT_GOAL` do Makefile para `check`.
+`src/raw_socket_engine.cpp`: steps 3 to 5 (arming the signal, `drain`,
+`engine_stop`); plus `NIC::handle` in `nic.h`. The constructor and `engine_send`
+are already done.
 
-- **Verificação:** `make check` roda inteiro **e falha** quando um receptor perde frame,
-  quando uma VM estoura o timeout, ou quando a captura sai vazia. Teste que só imprime
-  aviso não é avaliável — está escrito no guia.
-- **Antes de medir qualquer coisa:** `ip route get 239.10.10.10`. Nesta máquina responde
-  `dev wlp0s20f3` — o barramento sai pela WiFi. Capturar em `lo` devolve captura vazia.
-  `sudo ip route add 239.10.10.0/24 dev lo` prende o barramento à máquina.
-- **Rótulo honesto:** se você mediu request→response, é round-trip. E diga que a bancada
-  roda em TCG, sem `/dev/kvm` — o número é dominado por ruído de emulação. Reportar isso
-  é mais forte do que um número bonito sem contexto.
+- **Reception is by SIGNAL, not by thread** — an assignment requirement, see
+  `doc/design-decisions.md` §2.1. The steps commented in the `.cpp` follow that
+  order.
+- **Intermediate check 1:** the constructor prints the MAC it read; compare it
+  against `ip -br link` **inside the VM** (on the host, `socket(AF_PACKET)`
+  fails with `EPERM`). Do not move on until that matches.
+- **Intermediate check 2:** a `write(2)` in the handler proves it fires, before
+  you write a single line of `drain()`.
+- **Phase verification:** VM 1 sends through the `NIC`, VM 2 receives and
+  `handle()` prints.
+- **The constraint that rules this phase:** everything reachable from `handle()`
+  runs in signal context. No `printf`/stdio, no `malloc`/`new`, no `std::mutex`
+  (`man 7 signal-safety`). `list.h` was already rewritten lock-free because of
+  it; your `NIC::handle` has to respect the same limit.
+- **Payoff:** question 3 of the guide ("how will a blocked receiver terminate
+  cleanly") ceases to exist — there is no blocked receiver. Disarming is
+  removing `O_ASYNC`. Say that in the presentation.
+- **New trap:** a local `Ethernet::Frame` inside the handler is 1514 bytes on
+  the stack of the interrupted thread, which is not one you chose.
+- **Trap measured on this bench:** QEMU's `virtio-net` does **not** pad to 60
+  bytes. `size = received - 14` works here and breaks on real hardware and in
+  Stage 2. If you want a correct size on any medium, it has to travel in a
+  `Protocol::Header` field — a decision Phase 5 will demand.
 
 ---
 
-## Fase 7 — Documentação e slides · ~2–3 h · **não é opcional**
+## Phase 4 — Marshalling · ~1–2 h
 
-- Diagramas em `doc/`: topologia da frota, camadas, e a sequência de uma mensagem do
-  `send()` até a thread da aplicação acordar, marcando onde começa e termina o contexto
-  de sinal. O enunciado exige.
-- `doc/decisoes.md` já tem os nove desvios da API do PDF. Falta preencher as pendências
-  do §4 e conferir que cada decisão que você tomou nas Fases 2, 3 e 5 está lá.
-- Slides em `doc/`, com a avaliação de desempenho.
-- O commit avaliado tem que estar na `main`.
+`NIC::send(Address, prot, data, size)`, `NIC::send(Buffer*)`,
+`NIC::unmarshal`.
+
+- **Verification:** the roundtrip test in section 4 of `tests/test_stack.cpp`:
+  build with `alloc()`, pass through `unmarshal()`, check that `src`, `dst` and
+  the bytes come back identical.
+  **Done** (Aug 24): green. The whole `test-stack` is at 23 checks, 0 failures.
+- **Why the test is worth it:** it is what catches byte-order and header-offset
+  errors **on the host, in seconds**, instead of with tshark at two in the
+  morning.
 
 ---
 
-## Plano do fim de semana (hipótese: apresentação segunda ou terça)
+## Phase 5 — Protocol + Communicator · ~2–3 h · **the demo line**
 
-| Quando | O quê |
+`include/protocol.h` and `include/communicator.h`.
+
+- **Verification:** five VMs. VM 1 transmits, VMs 2–5 print `RESULT ... OK`.
+  That closes the "four receivers prove reception from one sender" checklist
+  item.
+- **PDF trap:** `Communicator::receive()` — the assignment passes
+  `message->size()` as the capacity. On a freshly constructed message that is
+  **0** and you receive zero bytes forever, with no error. Capacity on the way
+  in, received size on the way out, different fields.
+- **From here on you have something to show.** If time runs out after this
+  phase, see "Emergency cuts".
+
+---
+
+## Phase 6 — Fleet, capture, statistics · ~3–4 h
+
+`scripts/run-fleet.sh`, `capture.sh`, `analyze-capture.sh`,
+`install-initramfs.sh`, and switching the Makefile's `.DEFAULT_GOAL` to `check`.
+
+- **Verification:** `make check` runs end to end **and fails** when a receiver
+  loses a frame, when a VM blows the timeout, or when the capture comes back
+  empty. A test that only prints a warning is not gradeable — it says so in the
+  guide.
+- **Before measuring anything:** `ip route get 239.10.10.10`. On this machine it
+  answers `dev wlp0s20f3` — the bus goes out over WiFi. Capturing on `lo`
+  returns an empty capture. `sudo ip route add 239.10.10.0/24 dev lo` pins the
+  bus to the machine.
+- **Honest label:** if you measured request→response, it is round-trip. And say
+  the bench runs in TCG, without `/dev/kvm` — the number is dominated by
+  emulation noise. Reporting that is stronger than a pretty number with no
+  context.
+
+---
+
+## Phase 7 — Documentation and slides · ~2–3 h · **not optional**
+
+- Diagrams in `doc/`: fleet topology, layers, and the sequence of a message from
+  `send()` until the application thread wakes up, marking where the signal
+  context begins and ends. The assignment requires them.
+- `doc/design-decisions.md` already has the nine deviations from the PDF's API.
+  What is left is filling in §4's open items and checking that every decision
+  you made in Phases 2, 3 and 5 is there.
+- Slides in `doc/`, with the performance evaluation.
+- The graded commit has to be on `main`.
+
+---
+
+## Weekend plan (hypothesis: presentation Monday or Tuesday)
+
+| When | What |
 |---|---|
-| sáb 22, tarde/noite | Fases 0, 1, 2 — sonda funcionando e `test-stack` verde |
-| dom 23, manhã | Fase 3 — Engine; duas VMs conversando pela `NIC` |
-| dom 23, tarde | Fases 4 e 5 — cinco VMs, quatro receptores provando |
-| dom 23, noite | Fase 6 — `make check` |
-| seg 24, manhã | Fase 7 — diagramas e slides |
+| Sat 22, afternoon/evening | Phases 0, 1, 2 — probe working and `test-stack` green |
+| Sun 23, morning | Phase 3 — Engine; two VMs talking through the `NIC` |
+| Sun 23, afternoon | Phases 4 and 5 — five VMs, four receivers proving |
+| Sun 23, evening | Phase 6 — `make check` |
+| Mon 24, morning | Phase 7 — diagrams and slides |
 
-Se domingo à noite a Fase 5 não estiver de pé, **pare de codar e vá para a Fase 7.**
-Uma demo parcial bem explicada vale mais que uma completa sem slides.
-
----
-
-## Corte de emergência
-
-Se o tempo apertar, corte **nesta ordem** — do menos doloroso ao mais:
-
-1. **`NIC::receive()` síncrono.** É redundante com o par `handle()`/`notify()` nesta
-   arquitetura. Deixe devolvendo `-1` e **explique a decisão em `doc/`**. Método morto
-   documentado é melhor que método morto escondido.
-2. **`NIC::address(Address)` setter.** A Etapa 1 usa o MAC real de `eth0` e não deixa
-   ninguém trocar. Mesma regra: documente.
-3. **Percentil na estatística.** Entregue count, mean, min e max; o guia diz
-   "preferencialmente" para o percentil.
-4. **Fork dos componentes.** Um processo por VM ainda modela cinco veículos e cumpre a
-   parte do checklist que fala de VMs. A modelagem de componentes como processos POSIX é
-   requisito do enunciado, então isto é dívida **declarada** na apresentação, não
-   esquecida — e é exatamente por onde a Etapa 2 começa.
-
-O que **não** se corta, porque é item explícito do checklist de aceitação: broadcast como
-destino, EtherType dedicado, cinco VMs, quatro receptores provando recepção, `make` que
-falha quando deve, latência automática, e `doc/`.
+If Phase 5 is not standing by Sunday evening, **stop coding and go to Phase 7.**
+A partial demo explained well is worth more than a complete one with no slides.
 
 ---
 
-## Sinais de que você saiu do caminho
+## Emergency cuts
 
-- Está mexendo em `nic.h` ou `protocol.h` para fazer o raw socket funcionar → alguma
-  syscall vazou da Engine. É a primeira coisa que o Fröhlich vai procurar.
-- `make test-support` ficou vermelho → você quebrou o alicerce, não a sua camada nova.
-- Está depurando com `printf` dentro do handler → além de a saída poder não aparecer
-  (stdout bufferizado), `printf` **não é async-signal-safe**: se o sinal chegar no meio
-  de um `printf` do `main`, você corrompe o buffer da stdio. Use `write(2)`.
-- Precisou de `std::mutex` no caminho de recepção → pare. Travar um mutex dentro de um
-  handler que interrompeu a thread que já o segura é deadlock imediato, e ele vai
-  aparecer sob carga, na demonstração.
-- Passou de uma hora numa fase de estimativa de uma hora → pergunte, não insista. As
-  estimativas assumem primeira vez com raw socket, mas não assumem travar sozinho.
+If time gets tight, cut **in this order** — from least painful to most:
+
+1. **Synchronous `NIC::receive()`.** It is redundant with the
+   `handle()`/`notify()` pair in this architecture. Leave it returning `-1` and
+   **explain the decision in `doc/`**. A documented dead method is better than a
+   hidden one.
+2. **The `NIC::address(Address)` setter.** Stage 1 uses `eth0`'s real MAC and
+   lets nobody change it. Same rule: document it.
+3. **The percentile in the statistics.** Deliver count, mean, min and max; the
+   guide says "preferably" for the percentile.
+4. **Forking the components.** One process per VM still models five vehicles and
+   satisfies the part of the checklist about VMs. Modelling components as POSIX
+   processes is an assignment requirement, so this is **declared** debt in the
+   presentation, not forgotten debt — and it is exactly where Stage 2 begins.
+
+What is **not** cut, because they are explicit acceptance-checklist items:
+broadcast as the destination, a dedicated EtherType, five VMs, four receivers
+proving reception, a `make` that fails when it should, automatic latency, and
+`doc/`.
+
+---
+
+## Signs you have gone off track
+
+- You are editing `nic.h` or `protocol.h` to make the raw socket work → some
+  syscall leaked out of the Engine. It is the first thing Fröhlich will look
+  for.
+- `make test-support` went red → you broke the foundation, not your new layer.
+- You are debugging with `printf` inside the handler → besides the output
+  possibly not appearing (stdout is buffered), `printf` is **not
+  async-signal-safe**: if the signal arrives in the middle of a `printf` in
+  `main`, you corrupt the stdio buffer. Use `write(2)`.
+- You needed a `std::mutex` on the reception path → stop. Locking a mutex inside
+  a handler that interrupted the thread already holding it is immediate
+  deadlock, and it will show up under load, during the demo.
+- You spent more than an hour on a phase estimated at one hour → ask, do not
+  push on. The estimates assume a first time with raw sockets, but they do not
+  assume getting stuck alone.

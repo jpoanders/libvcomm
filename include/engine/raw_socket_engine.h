@@ -5,61 +5,61 @@
 #include "../ethernet.h"
 
 // =============================================================================
-// Raw_Socket_Engine — a Engine da ETAPA 1.
+// Raw_Socket_Engine — STAGE 1's Engine.
 //
-// ESTA CLASSE É O ÚNICO LUGAR DA BIBLIOTECA QUE PODE CHAMAR SYSCALL DE REDE.
+// THIS CLASS IS THE ONLY PLACE IN THE LIBRARY ALLOWED TO MAKE NETWORK
+// SYSCALLS.
 //
-// É esse o contrato inteiro.  NIC, Protocol e Communicator não sabem que existe
-// socket, sockaddr_ll ou eth0.  Quando a Etapa 2 pedir comunicação entre
-// processos da MESMA VM, você escreve Shared_Memory_Engine com estes mesmos
-// métodos e NIC<Shared_Memory_Engine> funciona sem alterar uma linha da NIC.
-// Se alguma syscall vazar para fora daqui, essa promessa quebra — e é a
-// primeira coisa que o Fröhlich vai procurar.
+// That is the whole contract.  NIC, Protocol and Communicator do not know that
+// sockets, sockaddr_ll or eth0 exist.  When Stage 2 asks for communication
+// between processes on the SAME VM, you write Shared_Memory_Engine with these
+// same methods and NIC<Shared_Memory_Engine> works without changing a single
+// line of the NIC.  If any syscall leaks out of here, that promise breaks — and
+// it is the first thing Fröhlich will look for.
 //
 //                 NIC<Raw_Socket_Engine>          NIC<Shared_Memory_Engine>
 //                          |                                |
 //                    raw socket / eth0                 shm_open / mmap
-//                       (Etapa 1)                        (Etapa 2)
+//                       (Stage 1)                         (Stage 2)
 //
 // -----------------------------------------------------------------------------
-// RECEPÇÃO POR SINAL POSIX  (revisado em 23/08/2026)
+// RECEPTION THROUGH A POSIX SIGNAL  (revised 2026-08-23)
 // -----------------------------------------------------------------------------
-// A recepção NÃO usa thread.  O enunciado é explícito:
+// Reception does NOT use a thread.  The assignment is explicit:
 //
-//   "os eventos de recepção de pacotes pelo kernel do SO devem ser
-//   imediatamente
-//    propagados às camadas superiores da pilha de protocolos.  Essa propagação
-//    pode se dar tanto através da implementação de módulos específicos do
-//    protocolo para o kernel quanto através de SINAIS POSIX."
+//   "packet reception events from the OS kernel must be immediately propagated
+//    to the upper layers of the protocol stack.  That propagation may happen
+//    either through the implementation of protocol-specific kernel modules or
+//    through POSIX SIGNALS."
 //
-// E há uma razão de projeto por trás, não só uma regra: no EPOS, handle() é
-// chamado do handler de INTERRUPÇÃO DE HARDWARE da NIC.  O análogo fiel de
-// interrupção em POSIX é sinal.  Manter isso preserva a estrutura do EPOS — e
-// explica o resto do desenho:
+// And there is a design reason behind it, not just a rule: in EPOS, handle() is
+// called from the NIC's HARDWARE INTERRUPT handler.  The faithful POSIX
+// analogue of an interrupt is a signal.  Keeping that preserves EPOS's
+// structure — and explains the rest of the design:
 //
-//   * Conditional_Data_Observer::update não pode bloquear  -> roda em contexto
-//     de interrupção;
-//   * Concurrent_Observer usa semáforo                     -> sem_post(3) é uma
-//     das poucas funções async-signal-safe (man 7 signal-safety);
-//   * o pool de Buffers é pré-alocado                      -> malloc não é.
+//   * Conditional_Data_Observer::update must not block -> it runs in interrupt
+//     context;
+//   * Concurrent_Observer uses a semaphore              -> sem_post(3) is one
+//     of the few async-signal-safe functions (man 7 signal-safety);
+//   * the Buffer pool is preallocated                   -> malloc is not.
 //
-// O mecanismo, em dois fcntl:
+// The mechanism, in two fcntl calls:
 //
-//   fcntl(fd, F_SETOWN, getpid())            quem recebe o sinal
+//   fcntl(fd, F_SETOWN, getpid())            who receives the signal
 //   fcntl(fd, F_SETFL, ... | O_ASYNC | O_NONBLOCK)
 //
-// O sinal é SIGIO, o default do O_ASYNC — sem F_SETSIG.  A objeção conhecida é
-// que sinal padrão NÃO enfileira: dois frames em rajada geram um sinal só.  Não
-// importa aqui, porque a garantia de entrega é o LAÇO de drenagem, não a
-// contagem de sinais — um único SIGIO manda drain() esvaziar a fila inteira.
-// Sinal de tempo real (SIGRTMIN+n, com F_SETSIG e SA_SIGINFO) só passaria a
-// valer a pena se houvesse mais de um descritor a distinguir por si_fd.
-// Ver doc/decisoes.md.
+// The signal is SIGIO, O_ASYNC's default — no F_SETSIG.  The known objection is
+// that standard signals do NOT queue: two frames in a burst generate a single
+// signal.  It does not matter here, because the delivery guarantee is the drain
+// LOOP, not the signal count — a single SIGIO makes drain() empty the whole
+// queue.  A real-time signal (SIGRTMIN+n, with F_SETSIG and SA_SIGINFO) would
+// only start to be worthwhile if there were more than one descriptor to tell
+// apart by si_fd.  See doc/design-decisions.md.
 //
-// Por que O_NONBLOCK: o handler tem que DRENAR — chamar recvfrom em laço até
-// EAGAIN — porque vários frames podem ter chegado antes de ele rodar.  Sem
-// O_NONBLOCK o laço bloquearia na última iteração e você teria um processo
-// dormindo dentro de um handler de sinal.
+// Why O_NONBLOCK: the handler must DRAIN — call recvfrom in a loop until EAGAIN
+// — because several frames may have arrived before it ran.  Without O_NONBLOCK
+// the loop would block on the last iteration and you would have a process
+// sleeping inside a signal handler.
 // =============================================================================
 
 class Raw_Socket_Engine
@@ -68,17 +68,17 @@ protected:
     typedef Ethernet::Address Address;
     typedef Ethernet::Protocol Protocol;
 
-    // Abre o raw socket em `iface` filtrando por `prot`.
+    // Opens the raw socket on `iface`, filtering by `prot`.
     //
-    // Contrato: depois de construir, engine_valid() diz se deu certo.  O
-    // construtor NÃO lança exceção e NÃO chama exit() — quem constrói decide o
-    // que fazer com a falha.
+    // Contract: after construction, engine_valid() tells whether it worked.
+    // The constructor does NOT throw and does NOT call exit() — the caller
+    // decides what to do with the failure.
     //
-    // NÃO arma a recepção.  Motivo: handle() é virtual e a classe derivada
-    // (NIC) ainda não terminou de construir neste ponto.  Pior que antes,
-    // aliás: com sinal, um frame que chegasse aqui chamaria um virtual puro em
-    // objeto meio-construído.  Quem chama engine_start() é o construtor da NIC,
-    // no fim.
+    // It does NOT arm reception.  Reason: handle() is virtual and the derived
+    // class (NIC) has not finished constructing at this point.  Worse than
+    // before, in fact: with a signal, a frame arriving here would call a pure
+    // virtual on a half-constructed object.  engine_start() is called by the
+    // NIC's constructor, at the end.
     Raw_Socket_Engine(const char * iface, Protocol prot);
 
     virtual ~Raw_Socket_Engine();
@@ -87,56 +87,58 @@ protected:
     Raw_Socket_Engine & operator=(const Raw_Socket_Engine &) = delete;
 
     // -------------------------------------------------------------------------
-    // Envio.  `frame` já vem montado por completo (dst, src, EtherType e
-    // payload) e `size` é o total em bytes, cabeçalho incluído.
+    // Sending.  `frame` arrives fully built (dst, src, EtherType and payload)
+    // and `size` is the total in bytes, header included.
     //
-    // Contrato: devolve o número de bytes entregues ao kernel, ou -1 com errno
-    // preservado.  Não escreve em stdout — quem loga é a camada de cima.
+    // Contract: returns the number of bytes handed to the kernel, or -1 with
+    // errno preserved.  It does not write to stdout — logging is the upper
+    // layer's job.
     //
-    // Roda na thread da aplicação, fora do handler.  Só que ele pode ser
-    // INTERROMPIDO por um: um frame pode chegar no meio do seu sendto.  Tudo
-    // que engine_send e o handler compartilharem precisa aguentar isso.
+    // Runs on the application thread, outside the handler.  Except that it can
+    // be INTERRUPTED by one: a frame may arrive in the middle of your sendto.
+    // Anything engine_send and the handler share must tolerate that.
     // -------------------------------------------------------------------------
     int engine_send(const Ethernet::Frame * frame, unsigned int size);
 
     // -------------------------------------------------------------------------
-    // Arma / desarma a recepção por sinal.
+    // Arms / disarms signal-driven reception.
     //
-    // engine_start(): a partir do retorno true, handle() pode ser chamado A
-    // QUALQUER INSTRUÇÃO, na thread que estiver executando.  Tudo que handle()
-    // tocar precisa estar pronto antes desta chamada.
+    // engine_start(): from the moment it returns true, handle() may be called
+    // at ANY INSTRUCTION, on whichever thread is running.  Everything handle()
+    // touches must be ready before this call.
     //
-    // engine_stop(): quando retorna, nenhum sinal novo será gerado por este
-    // socket e handle() não será chamado nunca mais.  Idempotente.
+    // engine_stop(): when it returns, no new signal will be generated by this
+    // socket and handle() will never be called again.  Idempotent.
     //
-    // >>> A pergunta 3 do guia — "how will a blocked receiver terminate cleanly
-    // >>> during automated tests?" — some aqui.  Não existe receptor bloqueado
-    // >>> para acordar: desarmar é tirar o O_ASYNC com um fcntl.  Diga isso na
-    // >>> apresentação; é uma resposta melhor que qualquer uma das três que o
-    // >>> modelo de thread produziria.
+    // >>> Question 3 of the guide — "how will a blocked receiver terminate
+    // >>> cleanly during automated tests?" — disappears here.  There is no
+    // >>> blocked receiver to wake up: disarming is removing O_ASYNC with one
+    // >>> fcntl.  Say that in the presentation; it is a better answer than any
+    // >>> of the three the thread model would produce.
     // -------------------------------------------------------------------------
     bool engine_start();
     void engine_stop();
 
-    // MAC real da interface, lido do kernel na construção.  Nada de MAC
-    // hard-coded: o run-vm.sh gera 02:00:00:00:00:<id> por VM, e a origem do
-    // frame tem que ser o endereço de verdade.
+    // The interface's real MAC, read from the kernel at construction.  No
+    // hard-coded MACs: run-vm.sh generates 02:00:00:00:00:<id> per VM, and the
+    // frame's source has to be the real address.
     const Address & engine_address() const { return _address; }
 
     bool engine_valid() const { return _sockfd >= 0; }
 
     // -------------------------------------------------------------------------
-    // Diagnóstico do caminho de RX.  drain() não pode imprimir — está dentro do
-    // handler —, então ele registra aqui e quem lê é o laço principal.
+    // RX path diagnostics.  drain() cannot print — it is inside the handler —
+    // so it records here and the main loop reads it.
     //
-    // Os contadores são MONOTÔNICOS: a Engine nunca zera.  Quem lê guarda o
-    // último valor que viu e reporta a diferença.  A alternativa (o acessor ler
-    // e zerar) tem uma janela real: o handler pode incrementar entre a leitura
-    // e a escrita do zero, e essa contagem some.
+    // The counters are MONOTONIC: the Engine never resets them.  The reader
+    // keeps the last value it saw and reports the difference.  The alternative
+    // (an accessor that reads and clears) has a real window: the handler may
+    // increment between the read and the write of the zero, and that count
+    // vanishes.
     //
-    // Leia o CONTADOR primeiro e o errno depois — drain() escreve na ordem
-    // inversa, de modo que um contador que subiu sempre tem um errno pelo menos
-    // tão novo quanto ele.
+    // Read the COUNTER first and errno afterwards — drain() writes them in the
+    // opposite order, so a counter that went up always has an errno at least as
+    // new as itself.
     // -------------------------------------------------------------------------
     unsigned int engine_rx_errors() const
     {
@@ -145,62 +147,61 @@ protected:
     int engine_rx_error() const { return static_cast<int>(_rx_error); }
 
     // -------------------------------------------------------------------------
-    // Callback de subida.  A NIC implementa.  Chamado uma vez por frame que
-    // sobreviveu à filtragem.
+    // Upward callback.  The NIC implements it.  Called once per frame that
+    // survived filtering.
     //
-    // >>> RODA DENTRO DO SIGNAL HANDLER.  Esta linha é a mais importante do
-    // >>> arquivo, e vale para TUDO que handle() alcançar — NIC::handle, alloc,
-    // >>> notify, Protocol::update, Communicator::update.  Toda essa cadeia
-    // está
-    // >>> sujeita a async-signal-safety (man 7 signal-safety):
+    // >>> RUNS INSIDE THE SIGNAL HANDLER.  This line is the most important one
+    // >>> in the file, and it holds for EVERYTHING handle() reaches —
+    // >>> NIC::handle, alloc, notify, Protocol::update, Communicator::update.
+    // >>> That whole chain is subject to async-signal-safety
+    // >>> (man 7 signal-safety):
     // >>>
-    // >>>   PODE:    recvfrom, write, sem_post, atômicos lock-free,
-    // >>>            memcpy/memset, aritmética
-    // >>>   NÃO PODE: printf e qualquer stdio, malloc/new, std::mutex,
-    // >>>            std::string, std::cout, exceções
+    // >>>   ALLOWED:     recvfrom, write, sem_post, lock-free atomics,
+    // >>>                memcpy/memset, arithmetic
+    // >>>   NOT ALLOWED: printf and any stdio, malloc/new, std::mutex,
+    // >>>                std::string, std::cout, exceptions
     // >>>
-    // >>> printf é o que vai te pegar: é a primeira coisa que se quer fazer ao
-    // >>> receber uma mensagem.  Use write(2) — está na lista — ou guarde o
-    // dado
-    // >>> e imprima no laço principal.
+    // >>> printf is the one that will get you: it is the first thing you want
+    // >>> to do when a message arrives.  Use write(2) — it is on the list — or
+    // >>> stash the data and print it from the main loop.
     //
-    // Contrato: `frame` aponta para memória da Engine, válida SÓ durante a
-    // chamada.  Quem quiser guardar, copia.  Retorne rápido: enquanto handle()
-    // roda, a thread interrompida está parada.
+    // Contract: `frame` points into the Engine's memory, valid ONLY during the
+    // call.  Whoever wants to keep it, copies it.  Return fast: while handle()
+    // runs, the interrupted thread is stopped.
     // -------------------------------------------------------------------------
     virtual void handle(Ethernet::Frame * frame, unsigned int size) = 0;
 
 private:
-    // Trampolim: um handler de sinal é função livre, não tem `this`.  A ponte
-    // de volta para o objeto é um ponteiro estático.
+    // Trampoline: a signal handler is a free function, it has no `this`.  The
+    // bridge back to the object is a static pointer.
     //
-    // CONSEQUÊNCIA A DOCUMENTAR EM doc/decisoes.md: UMA Engine POR PROCESSO.
-    // Disposição de sinal é estado global do processo — duas Engines no mesmo
-    // processo disputariam o mesmo handler.  Para a Etapa 1 isso não incomoda
-    // (um processo = um veículo = uma NIC); na Etapa 2, quando um veículo virar
-    // vários processos, é a primeira suposição a revisar.
+    // CONSEQUENCE TO DOCUMENT IN doc/design-decisions.md: ONE Engine PER
+    // PROCESS.  Signal disposition is process-global state — two Engines in the
+    // same process would fight over the same handler.  For Stage 1 this does
+    // not hurt (one process = one vehicle = one NIC); in Stage 2, when a
+    // vehicle becomes several processes, it is the first assumption to revisit.
     static void signal_handler(int signo);
     static Raw_Socket_Engine * _instance;
 
-    // O laço de drenagem: recvfrom até EAGAIN, filtrando, chamando handle().
-    // Separado do trampolim para o handler ficar com uma linha só.
+    // The drain loop: recvfrom until EAGAIN, filtering, calling handle().
+    // Split out of the trampoline so the handler stays one line long.
     void drain();
 
     // -------------------------------------------------------------------------
-    // Estado.  Já declarado — você preenche no construtor.
+    // State.  Already declared — you fill it in the constructor.
     // -------------------------------------------------------------------------
-    int _sockfd;                  // -1 enquanto inválido
+    int _sockfd;                  // -1 while invalid
     unsigned int _ifindex;        // if_nametoindex("eth0")
-    Address _address;             // MAC real de eth0 (SIOCGIFHWADDR)
-    Protocol _protocol;           // EtherType, em HOST order
-    volatile sig_atomic_t _armed; // engine_start() já rodou?
+    Address _address;             // eth0's real MAC (SIOCGIFHWADDR)
+    Protocol _protocol;           // EtherType, in HOST order
+    volatile sig_atomic_t _armed; // has engine_start() run?
     volatile sig_atomic_t _rx_error;
     volatile sig_atomic_t _rx_errors;
 
-    // Nota: _armed é sig_atomic_t, não bool nem std::atomic<bool>.  É o único
-    // tipo que o padrão garante ser seguro compartilhar entre um handler e o
-    // código interrompido.  (std::atomic lock-free também serve; sig_atomic_t é
-    // o que a norma POSIX nomeia, e não custa nada.)
+    // Note: _armed is sig_atomic_t, not bool nor std::atomic<bool>.  It is the
+    // only type the standard guarantees is safe to share between a handler and
+    // the interrupted code.  (A lock-free std::atomic works too; sig_atomic_t
+    // is what the POSIX standard names, and it costs nothing.)
 };
 
 #endif // LIBVCOMM_RAW_SOCKET_ENGINE_H

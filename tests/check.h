@@ -4,8 +4,8 @@
 #include <cstdio>
 #include <cstring>
 
-// Mini-framework de teste: sem dependência externa, compila estático, roda em
-// 128 MB de RAM dentro da VM.  Suficiente para o P1.
+// Mini test framework: no external dependencies, compiles statically, runs in
+// 128 MB of RAM inside the VM.  Enough for Practical Class 1.
 
 namespace test {
 
@@ -33,8 +33,7 @@ inline void report(bool ok, const char * what, const char * file, int line)
 
 inline int summary(const char * suite)
 {
-    std::printf("\n%s: %d verificações, %d falhas\n", suite, checks(),
-                failures());
+    std::printf("\n%s: %d checks, %d failures\n", suite, checks(), failures());
     return failures() ? 1 : 0;
 }
 

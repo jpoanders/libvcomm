@@ -4,29 +4,30 @@
 #include <atomic>
 
 // =============================================================================
-// Buffer<T> — apoio.  JÁ IMPLEMENTADO.
+// Buffer<T> — support class.  ALREADY IMPLEMENTED.
 //
-// É o objeto que sobe a pilha: Engine escreve nele, NIC o entrega ao Protocol,
-// Protocol ao Communicator.  Ninguém copia o frame no caminho — passa-se o
-// ponteiro.  É o "zero-copy" que o EPOS persegue.
+// This is the object that travels up the stack: the Engine writes into it, the
+// NIC hands it to the Protocol, the Protocol to the Communicator.  Nobody
+// copies the frame along the way — the pointer is passed instead.  This is the
+// "zero-copy" that EPOS pursues.
 // =============================================================================
 //
-// PERGUNTA 4 DO GUIA DO PROFESSOR: "quem é dono de um buffer recebido, e quando
-// ele é liberado?"  A resposta desta biblioteca:
+// QUESTION 4 OF THE INSTRUCTOR'S GUIDE: "who owns a received buffer, and when
+// is it released?"  This library's answer:
 //
-//   - O pool vive dentro da NIC (NIC::_buffer[BUFFER_SIZE]).
-//   - alloc() marca um buffer como em uso e transfere a posse a quem chamou.
-//   - A posse desce junto com o ponteiro: quem recebeu o buffer é quem deve
-//     chamar NIC::free() — veja Protocol::update(), que libera o buffer quando
-//     NENHUM observador o quis.
-//   - free() devolve o buffer ao pool.  Esquecer um free() = vazamento
-//   silencioso
-//     que só aparece depois de BUFFER_SIZE mensagens.  Ver o teste de exaustão
-//     de pool em tests/.
+//   - The pool lives inside the NIC (NIC::_buffer[BUFFER_SIZE]).
+//   - alloc() marks a buffer as in use and transfers ownership to the caller.
+//   - Ownership travels with the pointer: whoever received the buffer is the
+//     one who must call NIC::free() — see Protocol::update(), which releases
+//     the buffer when NO observer wanted it.
+//   - free() returns the buffer to the pool.  A forgotten free() = a silent
+//     leak
+//     that only shows up after BUFFER_SIZE messages.  See the pool exhaustion
+//     test in tests/.
 //
-// lock() usa test-and-set atômico porque o pool é disputado entre a thread de
-// recepção (que precisa de um buffer para o frame que acabou de chegar) e a
-// thread da aplicação (que precisa de um para enviar).
+// lock() uses an atomic test-and-set because the pool is contended between the
+// reception path (which needs a buffer for the frame that just arrived) and the
+// application thread (which needs one to send).
 
 template <typename T> class Buffer
 {
@@ -35,16 +36,16 @@ public:
 
     Buffer() : _size(0), _in_use(false) {}
 
-    // Ponteiro para a área onde o frame realmente mora.
+    // Pointer to the area where the frame actually lives.
     T * frame() { return &_frame; }
     const T * frame() const { return &_frame; }
 
-    // Quantos bytes deste buffer são válidos (cabeçalho + payload).
+    // How many bytes of this buffer are valid (header + payload).
     unsigned int size() const { return _size; }
     void size(unsigned int s) { _size = s; }
 
-    // Tenta reservar este buffer.  Devolve true se conseguiu — e, se conseguiu,
-    // mais ninguém consegue até unlock().  Falha sem bloquear.
+    // Tries to reserve this buffer.  Returns true on success — and, if it
+    // succeeded, nobody else can until unlock().  Fails without blocking.
     bool lock() { return !_in_use.exchange(true, std::memory_order_acq_rel); }
 
     void unlock()

@@ -5,56 +5,58 @@
 #include "sem.h"
 
 // =============================================================================
-// Observer X Observed — os "Fundamentals" do PDF.
+// Observer X Observed — the PDF's "Fundamentals".
 //
-// Duas famílias, e a diferença entre elas é a razão de existirem as duas:
+// Two families, and the difference between them is the reason both exist:
 //
-//   Conditional_*  -> notificação SÍNCRONA e condicional.  update() roda no
-//                     contexto de quem notificou (o SIGNAL HANDLER).  Não
-//                     bloqueia ninguém.  É como NIC avisa Protocol e como
-//                     Protocol avisa Communicator.
+//   Conditional_*  -> SYNCHRONOUS, conditional notification.  update() runs in
+//                     the notifier's context (the SIGNAL HANDLER).  It blocks
+//                     nobody.  This is how the NIC tells the Protocol and how
+//                     the Protocol tells the Communicator.
 //
-//   Concurrent_*   -> notificação com DESACOPLAMENTO por semáforo.  update()
-//                     só enfileira e faz v(); quem chamou updated() estava
-//                     dormindo em p() e acorda.  É a fronteira entre o handler
-//                     e a thread da aplicação.
+//   Concurrent_*   -> notification DECOUPLED by a semaphore.  update() only
+//                     enqueues and does v(); whoever called updated() was
+//                     asleep in p() and wakes up.  This is the boundary between
+//                     the handler and the application thread.
 //
-// O caminho completo de uma mensagem:
+// The complete path of a message:
 //
 //   handler:   Engine::drain() -> recvfrom() -> NIC::handle() ->
 //   Observed::notify(prot,buf)
 //                -> Protocol::update() -> Observed::notify(port,buf)
 //                -> Communicator::update() -> Concurrent_Observer::update()
-//                -> _semaphore.v()          <<< o handler termina aqui
+//                -> _semaphore.v()          <<< the handler ends here
 //   app thread: Communicator::receive() -> Concurrent_Observer::updated()
-//                -> _semaphore.p()          <<< acorda com o buffer na mão
+//                -> _semaphore.p()          <<< wakes up holding the buffer
 //
 // -----------------------------------------------------------------------------
-// POR QUE SÃO DUAS FAMÍLIAS, E NÃO UMA  (resposta de banca)
+// WHY TWO FAMILIES AND NOT ONE  (panel answer)
 // -----------------------------------------------------------------------------
-// Porque o topo da cadeia roda em CONTEXTO DE INTERRUPÇÃO.  No EPOS, handle()
-// é chamado do handler de interrupção de hardware da NIC; aqui é o análogo
-// POSIX, um signal handler.  Isso não é detalhe de implementação — é o que
-// obriga o desenho inteiro:
+// Because the top of the chain runs in INTERRUPT CONTEXT.  In EPOS, handle() is
+// called from the NIC's hardware interrupt handler; here it is the POSIX
+// analogue, a signal handler.  This is not an implementation detail — it is
+// what forces the entire design:
 //
-//   * Conditional_* não pode bloquear -> quem bloqueia dentro de um handler
-//     trava a thread que foi interrompida, que não tem nada a ver com isso;
-//   * Concurrent_* usa semáforo       -> sem_post(3) é uma das poucas funções
-//     async-signal-safe (man 7 signal-safety).  Não é coincidência: a cadeia
-//     foi desenhada para ser legal a partir de um handler.
+//   * Conditional_* must not block -> whoever blocks inside a handler freezes
+//     the thread that was interrupted, which has nothing to do with any of it;
+//   * Concurrent_* uses a semaphore -> sem_post(3) is one of the few
+//     async-signal-safe functions (man 7 signal-safety).  That is no accident:
+//     the chain was designed to be legal from within a handler.
 //
-// TODA função alcançável a partir de notify() está sujeita a essa restrição.
-// Nada de printf/stdio, malloc/new, std::mutex, std::string.  É por isso que
-// list.h é lock-free e sem alocação, e que o pool de Buffers é pré-alocado.
+// EVERY function reachable from notify() is subject to that restriction.  No
+// printf/stdio, no malloc/new, no std::mutex, no std::string.  That is why
+// list.h is lock-free and allocation-free, and why the Buffer pool is
+// preallocated.
 // =============================================================================
 
 // -----------------------------------------------------------------------------
-// Conditional_Data_Observer<T, C> — interface pura.  Quem quer ser avisado
-// implementa update().
+// Conditional_Data_Observer<T, C> — pure interface.  Whoever wants to be
+// notified implements update().
 //
-// O rank é a CONDIÇÃO: o valor que o observador está esperando.  Para a NIC o
-// rank é o EtherType; para o Protocol é a Port.  notify(c, d) só chama quem tem
-// rank == c.  É isso, e só isso, que "conditional" significa aqui.
+// The rank is the CONDITION: the value the observer is waiting for.  For the
+// NIC the rank is the EtherType; for the Protocol it is the Port.  notify(c, d)
+// only calls those whose rank == c.  That, and only that, is what "conditional"
+// means here.
 // -----------------------------------------------------------------------------
 template <typename T, typename C = void> class Conditional_Data_Observer
 {
@@ -76,10 +78,10 @@ protected:
 };
 
 // -----------------------------------------------------------------------------
-// Conditionally_Data_Observed<T, C> — quem é observado.
+// Conditionally_Data_Observed<T, C> — the observed side.
 //
-// >>> SEUS TRÊS MÉTODOS.  Comece por aqui: são as ~15 linhas mais baratas do
-// >>> projeto e destravam NIC e Protocol de uma vez.
+// >>> YOUR THREE METHODS.  Start here: they are the cheapest ~15 lines in the
+// >>> project and they unblock NIC and Protocol at once.
 // -----------------------------------------------------------------------------
 template <typename T, typename C = void> class Conditionally_Data_Observed
 {
@@ -90,20 +92,20 @@ public:
     Conditionally_Data_Observed() {}
     virtual ~Conditionally_Data_Observed() {}
 
-    // Registra um observador interessado na condição c.
-    // Contrato: depois de attach(o, c), todo notify(c, d) deve chamar
+    // Registers an observer interested in condition c.
+    // Contract: after attach(o, c), every notify(c, d) must call
     // o->update(c, d).
     void attach(Observer * o, const C & c);
 
-    // Remove o observador.  Contrato: depois de detach(o, c), o nunca mais é
-    // chamado.  Chamado do destrutor de Protocol/Communicator — se falhar,
-    // notify() chama um objeto morto.
+    // Removes the observer.  Contract: after detach(o, c), o is never called
+    // again.  Called from Protocol's/Communicator's destructor — if it fails,
+    // notify() calls a dead object.
     void detach(Observer * o, const C & c);
 
-    // Entrega d a TODOS os observadores cujo rank case com c.
-    // Contrato: devolve true se pelo menos um observador foi notificado.
-    // O false é o que diz à NIC "ninguém quis este frame, pode liberar o
-    // buffer".
+    // Delivers d to ALL observers whose rank matches c.
+    // Contract: returns true if at least one observer was notified.
+    // The false is what tells the NIC "nobody wanted this frame, you can
+    // release the buffer".
     bool notify(const C & c, T * d);
 
 protected:
@@ -141,16 +143,16 @@ bool Conditionally_Data_Observed<T, C>::notify(const C & c, T * d)
 // -----------------------------------------------------------------------------
 // Concurrent_Observed / Concurrent_Observer
 //
-// TRANSCRITOS do full_assignment.pdf (bloco azul, "Fundamentals for Observer X
-// Observed").  O corpo destes métodos é do enunciado, não meu — está aqui para
-// você ter a base compilando, e vale a pena ler linha a linha porque cai na
-// banca.
+// TRANSCRIBED from full_assignment.pdf (blue block, "Fundamentals for Observer
+// X Observed").  The body of these methods is the assignment's, not mine — it
+// is here so you have a compiling baseline, and it is worth reading line by
+// line because it comes up at the panel.
 //
-// UMA CORREÇÃO NECESSÁRIA: o PDF chama obs->rank() dentro de notify(), mas o
-// Concurrent_Observer do PDF não tem campo _rank nem construtor que o receba.
-// Do jeito que está impresso, não compila.  Herdamos o _rank da mesma ideia do
-// Conditional_Data_Observer.  Anote em doc/decisoes.md — mostrar que você achou
-// a inconsistência é melhor do que fingir que ela não existe.
+// ONE NECESSARY CORRECTION: the PDF calls obs->rank() inside notify(), but the
+// PDF's Concurrent_Observer has neither a _rank field nor a constructor that
+// takes one.  As printed, it does not compile.  We inherit _rank from the same
+// idea as Conditional_Data_Observer.  Note it in doc/design-decisions.md —
+// showing that you found the inconsistency beats pretending it isn't there.
 // -----------------------------------------------------------------------------
 
 template <typename D, typename C = void> class Concurrent_Observer;
@@ -206,13 +208,14 @@ public:
     Concurrent_Observer() : _semaphore(0), _rank() {}
     virtual ~Concurrent_Observer() {}
 
-    // Chamado DENTRO DO SIGNAL HANDLER.  Repare que ele não bloqueia: enfileira
-    // e acorda.  É este par insert()/v() que substitui o rendezvous proibido —
-    // e as duas metades são async-signal-safe, o que é o que torna esta linha
-    // legal aqui.
+    // Called INSIDE THE SIGNAL HANDLER.  Note that it does not block: it
+    // enqueues and wakes.  It is this insert()/v() pair that replaces the
+    // forbidden rendezvous — and both halves are async-signal-safe, which is
+    // what makes this line legal here.
     //
-    // >>> _data.insert() devolve bool desde 23/08 e esta linha IGNORA.  Fila
-    // >>> cheia = mensagem descartada em silêncio.  Ver a nota em list.h.
+    // >>> _data.insert() has returned a bool since 2026-08-23 and this line
+    // >>> IGNORES it.  Queue full = message silently dropped.  See the note in
+    // >>> list.h.
     virtual void update(const C & c, D * d)
     {
         (void)c;
@@ -220,7 +223,7 @@ public:
         _semaphore.v();
     }
 
-    // Chamado NA THREAD DA APLICAÇÃO.  Bloqueia até haver dado.
+    // Called ON THE APPLICATION THREAD.  Blocks until there is data.
     D * updated()
     {
         _semaphore.p();

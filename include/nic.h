@@ -9,23 +9,24 @@
 #include "observer.h"
 
 // =============================================================================
-// NIC<Engine> — a abstração PORTÁVEL da placa de rede.
+// NIC<Engine> — the PORTABLE abstraction of the network card.
 //
-// Nenhuma syscall aqui dentro.  A NIC sabe montar frame, gerenciar um pool de
-// buffers e avisar quem se registrou por EtherType.  Como os bytes chegam ao
-// meio é problema da Engine, que entra por herança privada.
+// No syscalls in here.  The NIC knows how to build a frame, manage a buffer
+// pool and notify whoever registered for an EtherType.  How the bytes reach the
+// medium is the Engine's problem, and the Engine comes in through private
+// inheritance.
 //
-// POR QUE `private Engine` E NÃO UM MEMBRO?
-//   Herança privada dá acesso aos métodos protegidos da Engine sem expor nada
-//   disso para fora da NIC, e permite sobrescrever handle() — que é como a
-//   Engine empurra frames para cima.  Com um membro, você precisaria de um
-//   ponteiro de volta ou de std::function.  Ambos funcionam; esta é a escolha
-//   do EPOS e é a mais barata.  Saiba defender isso.
+// WHY `private Engine` AND NOT A MEMBER?
+//   Private inheritance gives access to the Engine's protected methods without
+//   exposing any of it outside the NIC, and it allows overriding handle() —
+//   which is how the Engine pushes frames upward.  With a member you would need
+//   a back pointer or a std::function.  Both work; this is EPOS's choice and
+//   the cheapest one.  Know how to defend it.
 //
-// POR QUE A NIC É OBSERVADA E NÃO CHAMA O PROTOCOL DIRETO?
-//   Porque uma NIC pode servir vários protocolos ao mesmo tempo, cada um com
-//   seu EtherType, e ela não pode conhecer nenhum deles.  Observer é o que
-//   inverte essa dependência.
+// WHY IS THE NIC OBSERVED INSTEAD OF CALLING THE PROTOCOL DIRECTLY?
+//   Because one NIC may serve several protocols at once, each with its own
+//   EtherType, and it cannot know any of them.  Observer is what inverts that
+//   dependency.
 // =============================================================================
 
 template <typename Engine>
@@ -38,8 +39,9 @@ public:
     static const unsigned int BUFFER_SIZE =
         Traits<Ethernet>::SEND_BUFFERS + Traits<Ethernet>::RECEIVE_BUFFERS;
 
-    // Estes typedefs escondem os das duas bases (Ethernet e Engine, que ambas
-    // têm um `Address`).  Sem eles, `Address` dentro da NIC é ambíguo.
+    // These typedefs hide the ones from both bases (Ethernet and Engine, which
+    // both have an `Address`).  Without them, `Address` inside the NIC is
+    // ambiguous.
     typedef Ethernet::Address Address;
     typedef Ethernet::Protocol Protocol_Number;
     typedef ::Buffer<Ethernet::Frame> Buffer;
@@ -47,43 +49,44 @@ public:
     typedef Conditional_Data_Observer<Buffer, Protocol_Number> Observer;
     typedef Conditionally_Data_Observed<Buffer, Protocol_Number> Observed;
 
-    // O PDF marca o construtor como protected (a NIC é singleton, instanciada
-    // por Meta/Traits no EPOS).  Aqui fica público: sem uma factory, protected
-    // deixaria a classe inutilizável.  Ver doc/decisoes.md.
+    // The PDF marks the constructor protected (the NIC is a singleton,
+    // instantiated by Meta/Traits in EPOS).  Here it is public: without a
+    // factory, protected would make the class unusable.  See
+    // doc/design-decisions.md.
     NIC();
     ~NIC();
 
     // -------------------------------------------------------------------------
-    // Caminho simples (síncrono): copia `data` para um frame e envia.
-    // Contrato: devolve bytes de PAYLOAD enviados, ou -1.
+    // Simple (synchronous) path: copies `data` into a frame and sends it.
+    // Contract: returns PAYLOAD bytes sent, or -1.
     // -------------------------------------------------------------------------
     int send(Address dst, Protocol_Number prot, const void * data,
              unsigned int size);
 
-    // Extrai de um buffer já recebido.  Contrato: devolve bytes de payload
-    // copiados para `data`, no máximo `size`.
+    // Extracts from an already received buffer.  Contract: returns payload
+    // bytes copied into `data`, at most `size`.
     int receive(Address * src, Protocol_Number * prot, void * data,
                 unsigned int size);
 
     // -------------------------------------------------------------------------
-    // Caminho zero-copy: quem envia pede um buffer, escreve direto nele e
-    // manda.
+    // Zero-copy path: the sender asks for a buffer, writes straight into it and
+    // sends.
     // -------------------------------------------------------------------------
-    // Reserva um buffer do pool e JÁ PREENCHE o cabeçalho (dst, src=nosso MAC,
-    // prot).  Contrato: devolve 0 se o pool estiver esgotado — e devolver 0 é
-    // comportamento normal, não erro fatal; quem chamou decide.
+    // Reserves a buffer from the pool and ALREADY FILLS the header (dst,
+    // src=our MAC, prot).  Contract: returns 0 if the pool is exhausted — and
+    // returning 0 is normal behaviour, not a fatal error; the caller decides.
     Buffer * alloc(Address dst, Protocol_Number prot, unsigned int size);
 
-    // Envia um buffer montado por alloc().  Contrato: libera o buffer ao final,
-    // com sucesso ou não.  Documente essa escolha: a alternativa é o chamador
-    // liberar, e misturar as duas é vazamento na certa.
+    // Sends a buffer built by alloc().  Contract: releases the buffer at the
+    // end, whether it succeeded or not.  Document that choice: the alternative
+    // is for the caller to release it, and mixing the two is a guaranteed leak.
     int send(Buffer * buf);
 
-    // Devolve o buffer ao pool.
+    // Returns the buffer to the pool.
     void free(Buffer * buf);
 
-    // Desmonta um buffer recebido: quem mandou, para quem, e o payload.
-    // Contrato: devolve bytes de payload copiados, ou -1.
+    // Unpacks a received buffer: who sent it, to whom, and the payload.
+    // Contract: returns payload bytes copied, or -1.
     int unmarshal(Buffer * buf, Address * src, Address * dst, void * data,
                   unsigned int size);
 
@@ -92,12 +95,13 @@ public:
 
     const Statistics & statistics() { return _statistics; }
 
-    // attach()/detach() vêm de Conditionally_Data_Observed (base pública).
-    // O PDF os lista com o comentário "possibly inherited" — é este o caso.
+    // attach()/detach() come from Conditionally_Data_Observed (public base).
+    // The PDF lists them with the comment "possibly inherited" — this is that
+    // case.
 
 private:
-    // Chamado DE DENTRO DO SIGNAL HANDLER da Engine, para cada frame que passou nos
-    // filtros.  É a porta de entrada de tudo que sobe.
+    // Called FROM INSIDE THE ENGINE'S SIGNAL HANDLER, for every frame that
+    // passed the filters.  It is the entry point of everything that goes up.
     void handle(Ethernet::Frame * frame, unsigned int size) override;
 
     Statistics _statistics;
@@ -105,22 +109,23 @@ private:
 };
 
 // -----------------------------------------------------------------------------
-// Implementação.  Template => tudo no header.
+// Implementation.  Template => everything in the header.
 // -----------------------------------------------------------------------------
 
 template <typename Engine>
 NIC<Engine>::NIC()
     : Engine(Traits<Ethernet>::INTERFACE, Traits<Ethernet>::PROTOCOL_NUMBER)
 {
-    // TODO(joao): armar a recepção — e só DEPOIS que _buffer e _statistics já
-    // existem, porque a partir daqui handle() pode ser chamado a QUALQUER
-    // INSTRUÇÃO, na thread que estiver executando no momento do sinal.
+    // TODO(joao): arm reception — and only AFTER _buffer and _statistics
+    // already exist, because from here on handle() may be called at ANY
+    // INSTRUCTION, on whichever thread happens to be running when the signal
+    // arrives.
     //     Engine::engine_start();
 }
 
 template <typename Engine> NIC<Engine>::~NIC()
 {
-    // TODO(joao): parar a Engine ANTES de destruir os buffers.
+    // TODO(joao): stop the Engine BEFORE destroying the buffers.
     //     Engine::engine_stop();
 }
 
@@ -139,10 +144,11 @@ template <typename Engine>
 int NIC<Engine>::receive(Address * src, Protocol_Number * prot, void * data,
                          unsigned int size)
 {
-    // TODO(joao): o PDF prevê este método síncrono.  Na arquitetura orientada a
-    // Observer ele é redundante com o par handle()/notify(); implemente só se o
-    // seu teste precisar.  Se não precisar, deixe-o devolvendo -1 e EXPLIQUE a
-    // decisão em doc/ — decisão documentada vale mais que método morto.
+    // TODO(joao): the PDF provides for this synchronous method.  In the
+    // Observer-oriented architecture it is redundant with the handle()/notify()
+    // pair; implement it only if your test needs it.  If it does not, leave it
+    // returning -1 and EXPLAIN the decision in doc/ — a documented decision is
+    // worth more than a dead method.
     (void)src;
     (void)prot;
     (void)data;
@@ -206,31 +212,32 @@ const typename NIC<Engine>::Address & NIC<Engine>::address()
 
 template <typename Engine> void NIC<Engine>::address(Address address)
 {
-    // TODO(joao): a Etapa 1 usa o MAC real de eth0 e não deixa ninguém
-    // trocá-lo. Este setter existe na API do PDF; decida se ele faz sentido
-    // aqui e documente.  Um método que mente é pior que um método ausente.
+    // TODO(joao): Stage 1 uses eth0's real MAC and lets nobody change it.  This
+    // setter exists in the PDF's API; decide whether it makes sense here and
+    // document it.  A method that lies is worse than a missing one.
     (void)address;
 }
 
 template <typename Engine>
 void NIC<Engine>::handle(Ethernet::Frame * frame, unsigned int size)
 {
-    // TODO(joao): a ponte entre a Engine e o resto da pilha.
+    // TODO(joao): the bridge between the Engine and the rest of the stack.
     //
-    //   1. alloc de um buffer de recepção (ou varrer o pool direto — mas note
-    //      que alloc() preenche cabeçalho de ENVIO; talvez você queira um
-    //      alloc_receive() separado.  Decisão sua, documente).
-    //      Sem buffer livre: _statistics.rx_dropped++ e RETORNAR.  Descartar é
-    //      resposta legítima; esperar por um buffer dentro de um handler não é.
+    //   1. alloc a reception buffer (or scan the pool directly — but note that
+    //      alloc() fills in a SEND header; you may want a separate
+    //      alloc_receive().  Your call, document it).
+    //      No free buffer: _statistics.rx_dropped++ and RETURN.  Dropping is a
+    //      legitimate answer; waiting for a buffer inside a handler is not.
     //
-    //   ATENÇÃO AO CONTEXTO: tudo aqui roda dentro do signal handler.  Nada de
-    //   printf para depurar (use write(2)), nada de new.  O pool é pré-alocado
-    //   exatamente por isso.
-    //   2. copiar `frame` para o buffer (a memória da Engine morre no retorno).
-    //   3. buf->size(size); atualizar rx_packets/rx_bytes.
+    //   MIND THE CONTEXT: everything here runs inside the signal handler.  No
+    //   printf for debugging (use write(2)), no new.  The pool is preallocated
+    //   for exactly that reason.
+    //   2. copy `frame` into the buffer (the Engine's memory dies on return).
+    //   3. buf->size(size); update rx_packets/rx_bytes.
     //   4. Observed::notify(ntohs(frame->prot), buf);
-    //      -> se devolver false, NINGUÉM quis o frame: free(buf).  Este `if` é
-    //         a diferença entre rodar a noite toda e vazar 32 buffers.
+    //      -> if it returns false, NOBODY wanted the frame: free(buf).  This
+    //         `if` is the difference between running all night and leaking 32
+    //         buffers.
     (void)frame;
     (void)size;
 }

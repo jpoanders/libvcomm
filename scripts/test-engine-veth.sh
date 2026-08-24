@@ -1,27 +1,28 @@
 #!/bin/bash
-# Prova POSITIVA do braço de erro do drain(): engine_rx_errors() tem que subir
-# quando o socket quebra debaixo da Engine armada.
+# POSITIVE proof of drain()'s error arm: engine_rx_errors() must go up when the
+# socket breaks underneath an armed Engine.
 #
-# Precisa de root — cria um par veth e derruba uma ponta.  Como o binário roda
-# como filho deste script, ele herda CAP_NET_RAW e o setcap não entra na história.
+# Needs root — it creates a veth pair and brings one end down.  Since the binary
+# runs as a child of this script, it inherits CAP_NET_RAW and setcap never
+# enters the picture.
 #
 #     sudo scripts/test-engine-veth.sh
 #
-# POR QUE VETH E NÃO `lo`:  derrubar a loopback quebra a máquina inteira.  O par
-# veth é descartável e o trap abaixo o remove mesmo se o teste falhar.
+# WHY VETH AND NOT `lo`:  bringing loopback down breaks the whole machine.  The
+# veth pair is disposable and the trap below removes it even if the test fails.
 #
-# O QUE ACONTECE:  packet_notifier() vê NETDEV_DOWN na interface do socket, seta
-# sk_err = ENETDOWN e chama sk_error_report(), que dispara o SIGIO.  O drain()
-# entra, o recvfrom() consome o sk_err e devolve -1/ENETDOWN — nem EAGAIN nem
-# EINTR, ou seja, o terceiro braço.
+# WHAT HAPPENS:  packet_notifier() sees NETDEV_DOWN on the socket's interface,
+# sets sk_err = ENETDOWN and calls sk_error_report(), which fires the SIGIO.
+# drain() runs, recvfrom() consumes the sk_err and returns -1/ENETDOWN — neither
+# EAGAIN nor EINTR, i.e. the third arm.
 set -euo pipefail
 
 BIN="${BIN:-build/test-engine}"
 IF0="${IF0:-vcomm0}"
 IF1="${IF1:-vcomm1}"
 
-[ "$(id -u)" -eq 0 ] || { echo "precisa de root: sudo $0"; exit 1; }
-[ -x "$BIN" ] || { echo "compile antes: make test-engine"; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "root required: sudo $0"; exit 1; }
+[ -x "$BIN" ] || { echo "build it first: make test-engine"; exit 1; }
 
 cleanup() { ip link del "$IF0" 2>/dev/null || true; rm -f "${out:-}"; }
 trap cleanup EXIT
@@ -35,16 +36,16 @@ out="$(mktemp)"
 VCOMM_TEST_IFACE="$IF0" VCOMM_ERROR_TEST=1 "$BIN" >"$out" 2>&1 &
 pid=$!
 
-# Espera o handshake.  Sem ele, derrubar a interface cedo demais testaria o
-# construtor, não o drain().
-pronto=0
+# Wait for the handshake.  Without it, bringing the interface down too early
+# would test the constructor, not drain().
+ready=0
 for _ in $(seq 1 100); do
-    if grep -q PRONTO-PARA-ERRO "$out" 2>/dev/null; then pronto=1; break; fi
+    if grep -q READY-FOR-ERROR "$out" 2>/dev/null; then ready=1; break; fi
     sleep 0.1
 done
 
-if [ "$pronto" -ne 1 ]; then
-    echo "FALHA: o teste nunca chegou em PRONTO-PARA-ERRO"
+if [ "$ready" -ne 1 ]; then
+    echo "FAILURE: the test never reached READY-FOR-ERROR"
     kill "$pid" 2>/dev/null || true
     cat "$out"
     exit 1
@@ -52,16 +53,17 @@ fi
 
 ip link set "$IF0" down
 
-# Escalada.  O caminho esperado é NETDEV_DOWN setar sk_err = ENETDOWN.  Se por
-# alguma razão a interface cair sem sinalizar erro no socket, remover o device
-# (NETDEV_UNREGISTER) faz o mesmo de forma inequívoca.  Sem isso o teste ficaria
-# 10 s parado e falharia por timeout, sem dizer qual dos dois eventos faltou.
+# Escalation.  The expected path is NETDEV_DOWN setting sk_err = ENETDOWN.  If
+# for some reason the interface goes down without signalling an error on the
+# socket, removing the device (NETDEV_UNREGISTER) does the same unambiguously.
+# Without this the test would sit for 10 s and fail on timeout, without saying
+# which of the two events was missing.
 for _ in $(seq 1 30); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
 done
 if kill -0 "$pid" 2>/dev/null; then
-    echo "NOTA: NETDEV_DOWN não bastou; removendo $IF0 (NETDEV_UNREGISTER)"
+    echo "NOTE: NETDEV_DOWN was not enough; removing $IF0 (NETDEV_UNREGISTER)"
     ip link del "$IF0" 2>/dev/null || true
 fi
 

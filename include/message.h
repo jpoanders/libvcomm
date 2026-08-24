@@ -4,23 +4,24 @@
 #include <cstring>
 
 // =============================================================================
-// Message — apoio.  JÁ IMPLEMENTADA (o suficiente para a Etapa 1).
+// Message — support class.  ALREADY IMPLEMENTED (enough for Stage 1).
 //
-// O enunciado é explícito: nesta etapa a mensagem é M = {.*}, um array de bytes
-// e nada mais.  Não invente campo agora.
+// The assignment is explicit: at this stage the message is M = {.*}, an array
+// of bytes and nothing more.  Do not invent fields now.
 //
-// Como ela cresce nas próximas etapas — deixe o espaço, não o código:
-//   Etapa 2: M = {origin, payload}
-//   Etapa 3: M = {origin, timestamp, payload}
-//   Etapa 5: I = {origin, timestamp, type, period} / R = {..., value}
-//   Etapa 6: + MAC
+// How it grows in the coming stages — leave the room, not the code:
+//   Stage 2: M = {origin, payload}
+//   Stage 3: M = {origin, timestamp, payload}
+//   Stage 5: I = {origin, timestamp, type, period} / R = {..., value}
+//   Stage 6: + MAC
 // =============================================================================
 
 class Message
 {
 public:
-    // Teto deliberadamente baixo: o enunciado garante mensagem < MTU, e um
-    // buffer menor deixa o erro aparecer no teste em vez de no fio.
+    // Deliberately low ceiling: the assignment guarantees messages < MTU, and a
+    // smaller buffer makes the error show up in the test instead of on the
+    // wire.
     static const unsigned int MAX_SIZE = 1024;
 
     Message() : _size(0) { std::memset(_data, 0, sizeof(_data)); }
@@ -38,7 +39,7 @@ public:
     unsigned int size() const { return _size; }
     void size(unsigned int s) { _size = (s > MAX_SIZE) ? MAX_SIZE : s; }
 
-    // Devolve quantos bytes realmente entraram (trunca em MAX_SIZE).
+    // Returns how many bytes actually made it in (truncates at MAX_SIZE).
     unsigned int set(const void * data, unsigned int size)
     {
         _size = (size > MAX_SIZE) ? MAX_SIZE : size;

@@ -5,57 +5,60 @@
 #include <cstddef>
 
 // =============================================================================
-// List / Ordered_List — apoio.  JÁ IMPLEMENTADAS.
+// List / Ordered_List — support classes.  ALREADY IMPLEMENTED.
 //
-// REESCRITAS em 23/08/2026.  A primeira versão usava std::deque/std::vector com
-// std::mutex.  Isso deixou de ser legal quando a recepção passou a acontecer
-// dentro de um signal handler:
+// REWRITTEN on 2026-08-23.  The first version used std::deque/std::vector with
+// std::mutex.  That stopped being legal once reception started happening inside
+// a signal handler:
 //
-//   - pthread_mutex_lock NÃO está na lista de funções async-signal-safe
-//     (man 7 signal-safety).  Travar um mutex de dentro de um handler que
-//     interrompeu a mesma thread já segurando esse mutex é deadlock imediato.
-//   - deque::push_back e vector::push_back podem chamar malloc, que também não
-//     está na lista.
+//   - pthread_mutex_lock is NOT on the list of async-signal-safe functions
+//     (man 7 signal-safety).  Locking a mutex from inside a handler that
+//     interrupted the very thread already holding it is immediate deadlock.
+//   - deque::push_back and vector::push_back may call malloc, which is not on
+//     the list either.
 //
-// O que É permitido dentro de um handler, e é a base destas duas classes:
-// objetos std::atomic LOCK-FREE.  Sem mutex, sem syscall, sem alocação.
-// (C++17 [support.signal]; os static_assert abaixo cobram isso do compilador.)
+// What IS allowed inside a handler, and is the foundation of these two classes:
+// LOCK-FREE std::atomic objects.  No mutex, no syscall, no allocation.
+// (C++17 [support.signal]; the static_asserts below make the compiler prove
+// it.)
 //
-// Isto é a mesma decisão que o EPOS toma com listas intrusivas, e pela mesma
-// razão: no EPOS o topo da recepção roda em contexto de interrupção de
-// hardware; aqui roda em contexto de sinal.  A restrição é a mesma.
+// This is the same decision EPOS makes with intrusive lists, and for the same
+// reason: in EPOS the top of the reception path runs in hardware interrupt
+// context; here it runs in signal context.  The restriction is identical.
 //
-// Preço pago, e você precisa saber defender: capacidade FIXA.  Sem alocação não
-// existe crescer.  As duas classes dizem "não" quando enchem, em vez de alocar.
+// The price paid, and you need to be able to defend it: FIXED capacity.
+// Without allocation there is no growing.  Both classes say "no" when they
+// fill up instead of allocating.
 // =============================================================================
 
 static_assert(std::atomic<unsigned int>::is_always_lock_free,
-              "std::atomic<unsigned> nao e' lock-free nesta plataforma: a "
-              "biblioteca padrao usaria mutex por baixo e o handler quebraria");
+              "std::atomic<unsigned> is not lock-free on this platform: the "
+              "standard library would use a mutex underneath and the handler "
+              "would break");
 
 // -----------------------------------------------------------------------------
-// List<T, CAP> — fila FIFO de ponteiros, um produtor e um consumidor (SPSC).
+// List<T, CAP> — FIFO queue of pointers, one producer and one consumer (SPSC).
 //
-// Usada por Concurrent_Observer para guardar o que chegou e ainda não foi
-// consumido.  E os dois lados dela são exatamente os dois contextos do projeto:
+// Used by Concurrent_Observer to hold what arrived and has not been consumed
+// yet.  And its two sides are exactly the project's two contexts:
 //
-//     PRODUTOR  = o signal handler          -> insert()
-//     CONSUMIDOR = a thread da aplicação    -> remove()
+//     PRODUCER = the signal handler          -> insert()
+//     CONSUMER = the application thread      -> remove()
 //
-// Anel de tamanho fixo com dois índices atômicos.  Correto sem lock porque cada
-// índice tem um único escritor: o produtor só escreve _tail, o consumidor só
-// escreve _head.  O par release/acquire nesses índices é o que publica a
-// escrita do slot para o outro lado — sem ele, o consumidor poderia ver o
-// índice novo e o ponteiro velho.
+// Fixed-size ring with two atomic indices.  Correct without a lock because each
+// index has a single writer: the producer only writes _tail, the consumer only
+// writes _head.  The release/acquire pair on those indices is what publishes
+// the slot write to the other side — without it, the consumer could see the new
+// index and the old pointer.
 //
-// CAP tem que ser potência de 2 (o wraparound é um AND, não um módulo — divisão
-// em caminho de interrupção é desperdício).  Um slot fica sempre vago para
-// distinguir "cheia" de "vazia", então a capacidade útil é CAP-1.
+// CAP must be a power of 2 (the wraparound is an AND, not a modulo — division
+// on an interrupt path is waste).  One slot is always left empty to tell "full"
+// from "empty", so the usable capacity is CAP-1.
 // -----------------------------------------------------------------------------
 template <typename T, unsigned int CAP = 32> class List
 {
     static_assert(CAP >= 2 && (CAP & (CAP - 1)) == 0,
-                  "CAP precisa ser potencia de 2 e >= 2");
+                  "CAP must be a power of 2 and >= 2");
 
 public:
     List() : _head(0), _tail(0)
@@ -64,30 +67,31 @@ public:
             _slot[i] = 0;
     }
 
-    // Chamado do handler.  Devolve false se a fila estiver cheia.
+    // Called from the handler.  Returns false if the queue is full.
     //
-    // >>> ATENÇÃO: este bool é novo, e ignorá-lo é PERDER MENSAGEM em silêncio.
-    // >>> Concurrent_Observer::update() hoje ignora.  Quando a fila enche, a
-    // >>> mensagem que chegou não tem para onde ir — e esse é exatamente o
-    // >>> contador Ethernet::Statistics::rx_dropped.  Decida o que fazer e
-    // >>> escreva em doc/decisoes.md; "não pensei nisso" é a pior resposta.
+    // >>> WARNING: this bool is new, and ignoring it means SILENTLY LOSING
+    // >>> MESSAGES.  Concurrent_Observer::update() ignores it today.  When the
+    // >>> queue fills up, the message that arrived has nowhere to go — and that
+    // >>> is exactly the Ethernet::Statistics::rx_dropped counter.  Decide what
+    // >>> to do and write it in doc/design-decisions.md; "I didn't think about
+    // >>> it" is the worst possible answer.
     bool insert(T * e)
     {
         const unsigned int t = _tail.load(std::memory_order_relaxed);
         const unsigned int n = (t + 1) & (CAP - 1);
         if (n == _head.load(std::memory_order_acquire))
-            return false;                                   // cheia
+            return false;                                   // full
         _slot[t] = e;
-        _tail.store(n, std::memory_order_release);          // publica o slot
+        _tail.store(n, std::memory_order_release);          // publishes the slot
         return true;
     }
 
-    // Chamado da thread da aplicação.  Devolve 0 se estiver vazia.
+    // Called from the application thread.  Returns 0 if empty.
     T * remove()
     {
         const unsigned int h = _head.load(std::memory_order_relaxed);
         if (h == _tail.load(std::memory_order_acquire))
-            return 0;                                       // vazia
+            return 0;                                       // empty
         T * e = _slot[h];
         _head.store((h + 1) & (CAP - 1), std::memory_order_release);
         return e;
@@ -109,26 +113,26 @@ public:
 
 private:
     T *                       _slot[CAP];
-    std::atomic<unsigned int> _head;   // só o consumidor escreve
-    std::atomic<unsigned int> _tail;   // só o produtor escreve
+    std::atomic<unsigned int> _head;   // only the consumer writes
+    std::atomic<unsigned int> _tail;   // only the producer writes
 };
 
 // -----------------------------------------------------------------------------
-// Ordered_List<T, C, CAP> — coleção de observadores, cada um com um rank do
-// tipo C.  O nome vem do PDF (Observed::Observers).
+// Ordered_List<T, C, CAP> — collection of observers, each with a rank of type
+// C.  The name comes from the PDF (Observed::Observers).
 //
-// Assimetria que define o desenho: attach()/detach() rodam na thread principal,
-// na construção e destruição dos objetos; notify() PERCORRE de dentro do
-// handler.  Ou seja, é muita leitura em contexto de sinal e pouquíssima escrita
-// fora dele.
+// The asymmetry that defines the design: attach()/detach() run on the main
+// thread, when objects are constructed and destroyed; notify() TRAVERSES from
+// inside the handler.  In other words, lots of reading in signal context and
+// very little writing outside it.
 //
-// Vetor de slots atômicos de tamanho fixo.  detach() não compacta nada: escreve
-// 0 no slot (tombstone).  Compactar mexeria nos índices debaixo de um percurso
-// que pode estar acontecendo neste instante dentro do handler.  Um insert()
-// posterior reaproveita o slot vago antes de crescer.
+// Fixed-size vector of atomic slots.  detach() compacts nothing: it writes 0
+// into the slot (a tombstone).  Compacting would shift the indices underneath a
+// traversal that may be happening right now inside the handler.  A later
+// insert() reuses the empty slot before growing.
 //
-// O Iterator PULA os slots vazios sozinho, para que o laço do notify() fique
-// idêntico ao impresso no enunciado:
+// The Iterator SKIPS empty slots on its own, so that the notify() loop stays
+// identical to the one printed in the assignment:
 //
 //     for(Observers::Iterator obs = _observers.begin(); obs != _observers.end();
 //     obs++)
@@ -137,7 +141,7 @@ private:
 template <typename T, typename C, unsigned int CAP = 16> class Ordered_List
 {
     static_assert(std::atomic<T *>::is_always_lock_free,
-                  "std::atomic<T*> nao e' lock-free nesta plataforma");
+                  "std::atomic<T*> is not lock-free on this platform");
 
 public:
     class Iterator
@@ -156,8 +160,8 @@ public:
         bool operator!=(const Iterator & i) const { return _p != i._p; }
 
     private:
-        // Avança até o próximo slot ocupado.  É isto que faz o tombstone ser
-        // invisível para quem percorre.
+        // Advances to the next occupied slot.  This is what makes the tombstone
+        // invisible to whoever is traversing.
         void skip()
         {
             while (_p != _e && _p->load(std::memory_order_acquire) == 0)
@@ -186,12 +190,12 @@ public:
         return Iterator(_slot + n, _slot + n);
     }
 
-    // Thread principal.  false = lotado (CAP observadores vivos).
+    // Main thread.  false = full (CAP live observers).
     bool insert(T * e)
     {
         const unsigned int n = _size.load(std::memory_order_acquire);
 
-        for (unsigned int i = 0; i < n; i++)               // reaproveita vago
+        for (unsigned int i = 0; i < n; i++)               // reuse a free slot
             if (!_slot[i].load(std::memory_order_relaxed)) {
                 _slot[i].store(e, std::memory_order_release);
                 return true;
@@ -200,12 +204,12 @@ public:
         if (n >= CAP)
             return false;
 
-        _slot[n].store(e, std::memory_order_release);      // slot ANTES
-        _size.store(n + 1, std::memory_order_release);     // tamanho DEPOIS
+        _slot[n].store(e, std::memory_order_release);      // slot FIRST
+        _size.store(n + 1, std::memory_order_release);     // size AFTER
         return true;
     }
 
-    // Thread principal.  A partir do retorno, notify() não alcança mais `e`.
+    // Main thread.  From the moment it returns, notify() no longer reaches `e`.
     void remove(T * e)
     {
         const unsigned int n = _size.load(std::memory_order_acquire);
@@ -214,7 +218,7 @@ public:
                 _slot[i].store(0, std::memory_order_release);
     }
 
-    // Conta observadores VIVOS (ignora tombstones).
+    // Counts LIVE observers (ignores tombstones).
     unsigned int size() const
     {
         const unsigned int n = _size.load(std::memory_order_acquire);
@@ -231,7 +235,7 @@ public:
 
 private:
     mutable std::atomic<T *>  _slot[CAP];
-    std::atomic<unsigned int> _size;   // marca d'água: só cresce
+    std::atomic<unsigned int> _size;   // high-water mark: only grows
 };
 
 #endif // LIBVCOMM_LIST_H

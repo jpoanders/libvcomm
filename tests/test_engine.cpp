@@ -1,51 +1,52 @@
 // =============================================================================
-// Testes da ENGINE — Raw_Socket_Engine.
+// Tests for the ENGINE — Raw_Socket_Engine.
 //
-// Rode com `make test-engine`.  Separado do test-stack de propósito: aquele
-// promete rodar sem CAP_NET_RAW, e essa promessa vale manter.  Este aqui roda
-// nos dois modos e diz em qual está:
+// Run with `make test-engine`.  Deliberately separate from test-stack: that one
+// promises to run without CAP_NET_RAW, and that promise is worth keeping.  This
+// one runs in both modes and says which it is in:
 //
-//   NÍVEL 0  sem privilégio nenhum.  Exercita o caminho de FALHA do construtor,
-//            o destrutor sobre Engine inválida e a idempotência do stop.
+//   LEVEL 0  no privileges at all.  Exercises the constructor's FAILURE path,
+//            the destructor over an invalid Engine, and stop()'s idempotence.
 //
-//   NÍVEL 1  precisa de CAP_NET_RAW.  Sobe um socket de verdade em `lo` e
-//            exercita send, start, stop e drain.  Sem privilégio, é PULADO —
-//            não falha, senão um checkout novo parece quebrado.
+//   LEVEL 1  needs CAP_NET_RAW.  Brings up a real socket on `lo` and exercises
+//            send, start, stop and drain.  Without privileges it is SKIPPED —
+//            it does not fail, otherwise a fresh checkout would look broken.
 //
 //            $ make app && sudo setcap cap_net_raw+ep build/test-engine
 //            $ make test-engine
 //
-//            Melhor que rodar a suíte como root.  Para usar outra interface
-//            (um par veth, por exemplo):  VCOMM_TEST_IFACE=v0 make test-engine
+//            Better than running the suite as root.  To use another interface
+//            (a veth pair, for instance):  VCOMM_TEST_IFACE=v0 make test-engine
 //
 // -----------------------------------------------------------------------------
-// POR QUE `lo` FUNCIONA COMO BARRAMENTO DE TESTE
+// WHY `lo` WORKS AS A TEST BUS
 //
-// A loopback entrega o que ela transmite.  Cada engine_send() gera DUAS cópias
-// visíveis ao socket de pacote:
+// The loopback delivers what it transmits.  Each engine_send() produces TWO
+// copies visible to the packet socket:
 //
-//   1. a cópia de transmissão, com sll_pkttype == PACKET_OUTGOING;
-//   2. a cópia de recepção, que passa por eth_type_trans() — e como o destino é
-//      ff:ff:ff:ff:ff:ff, chega como PACKET_BROADCAST.
+//   1. the transmission copy, with sll_pkttype == PACKET_OUTGOING;
+//   2. the reception copy, which goes through eth_type_trans() — and since the
+//      destination is ff:ff:ff:ff:ff:ff, it arrives as PACKET_BROADCAST.
 //
-// Ou seja: um processo só se basta como emissor E receptor, e o filtro de
-// PACKET_OUTGOING do drain() fica sob teste de graça.  Se ele não existisse,
-// todo contador de frames abaixo daria o DOBRO.
+// In other words: a single process is enough to be both sender AND receiver,
+// and drain()'s PACKET_OUTGOING filter gets tested for free.  If it did not
+// exist, every frame counter below would read DOUBLE.
 //
 // -----------------------------------------------------------------------------
-// POR QUE OS TESTES BLOQUEIAM O SIGIO EM VEZ DE DORMIR
+// WHY THE TESTS BLOCK SIGIO INSTEAD OF SLEEPING
 //
-// "manda uma rajada e espera" é teste com relógio, e teste com relógio mente em
-// máquina carregada.  Aqui o SIGIO é bloqueado com sigprocmask() durante o
-// envio.  Enquanto bloqueado, os sinais gerados viram UM sinal pendente — é
-// exatamente a não-enfileiração dos sinais padrão, que é o ponto em disputa.
-// No sigprocmask() de desbloqueio o POSIX garante entrega antes do retorno, e
-// aí a asserção é determinística, sem sleep e sem tolerância:
+// "send a burst and wait" is a test with a clock, and a test with a clock lies
+// on a loaded machine.  Here SIGIO is blocked with sigprocmask() during the
+// send.  While blocked, the signals generated collapse into ONE pending signal
+// — which is exactly the non-queueing of standard signals, the point in
+// dispute.  On the unblocking sigprocmask(), POSIX guarantees delivery before
+// it returns, and then the assertion is deterministic, with no sleep and no
+// tolerance:
 //
-//   N frames enviados  ->  1 entrada no handler  ->  N chamadas de handle()
+//   N frames sent  ->  1 entry into the handler  ->  N calls to handle()
 //
-// É esse par de números que responde "por que SIGIO e não sinal de tempo real"
-// com medida em vez de argumento.  Ver doc/decisoes.md.
+// That pair of numbers answers "why SIGIO and not a real-time signal" with a
+// measurement instead of an argument.  See doc/design-decisions.md.
 // =============================================================================
 
 #include "check.h"
@@ -70,13 +71,13 @@ namespace {
 const unsigned short PROT = Traits<Ethernet>::PROTOCOL_NUMBER;
 
 // -----------------------------------------------------------------------------
-// Contagem de SINAIS, que é coisa diferente de contagem de frames.
+// Counting SIGNALS, which is a different thing from counting frames.
 //
-// O handler da Engine é privado e não dá para instrumentá-lo por dentro.  O que
-// dá é ENCADEAR: depois que o construtor da Engine instalou a disposição do
-// SIGIO, o teste lê essa disposição com sigaction(NULL, &cur), guarda o
-// ponteiro e instala um handler próprio que conta e repassa.  A biblioteca não
-// muda uma linha.
+// The Engine's handler is private and cannot be instrumented from the inside.
+// What can be done is CHAINING: after the Engine's constructor has installed the
+// SIGIO disposition, the test reads that disposition with sigaction(NULL, &cur),
+// keeps the pointer, and installs a handler of its own that counts and forwards.
+// The library does not change a single line.
 // -----------------------------------------------------------------------------
 volatile sig_atomic_t g_signals = 0;
 void (*g_engine_handler)(int) = 0;
@@ -89,8 +90,9 @@ extern "C" void counting_handler(int signo)
 }
 
 // -----------------------------------------------------------------------------
-// A sonda.  Raw_Socket_Engine não é instanciável: tudo é protected e handle() é
-// virtual puro.  Todo teste da Engine passa por uma derivada como esta.
+// The probe.  Raw_Socket_Engine is not instantiable: everything is protected and
+// handle() is pure virtual.  Every Engine test goes through a derived class like
+// this one.
 // -----------------------------------------------------------------------------
 class Probe : public Raw_Socket_Engine
 {
@@ -109,14 +111,14 @@ public:
     using Raw_Socket_Engine::engine_stop;
     using Raw_Socket_Engine::engine_valid;
 
-    volatile sig_atomic_t frames;   // quantas vezes handle() foi chamado
-    volatile sig_atomic_t oversize; // frame maior que o buffer da sonda
+    volatile sig_atomic_t frames;   // how many times handle() was called
+    volatile sig_atomic_t oversize; // frame larger than the probe's buffer
     unsigned char last[Ethernet::HEADER_SIZE + 64];
 
 protected:
-    // RODA DENTRO DO SIGNAL HANDLER.  Nada de printf, nada de alocação: só
-    // sig_atomic_t e memcpy.  Se esta função ficasse difícil de escrever sob
-    // essa regra, o problema estaria no contrato, não no teste.
+    // RUNS INSIDE THE SIGNAL HANDLER.  No printf, no allocation: only
+    // sig_atomic_t and memcpy.  If this function were hard to write under that
+    // rule, the problem would be in the contract, not in the test.
     void handle(Ethernet::Frame * frame, unsigned int size) override
     {
         frames = frames + 1;
@@ -127,14 +129,14 @@ protected:
     }
 };
 
-// Variável de ambiente ligada: existe, não vazia e diferente de "0".
-bool ligado(const char * nome)
+// An environment variable is on when it exists, is non-empty and is not "0".
+bool enabled(const char * name)
 {
-    const char * v = std::getenv(nome);
+    const char * v = std::getenv(name);
     return v && v[0] && std::strcmp(v, "0") != 0;
 }
 
-bool tem_cap_net_raw()
+bool has_cap_net_raw()
 {
     int fd = ::socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (fd < 0)
@@ -143,9 +145,10 @@ bool tem_cap_net_raw()
     return true;
 }
 
-// MAC pelo caminho do sysfs — independente do SIOCGIFHWADDR que a Engine usa.
-// Comparar o resultado de dois caminhos vale mais que comparar com constante.
-bool mac_do_sysfs(const char * iface, unsigned char out[6])
+// The MAC through the sysfs path — independent of the SIOCGIFHWADDR the Engine
+// uses.  Comparing the results of two paths is worth more than comparing against
+// a constant.
+bool mac_from_sysfs(const char * iface, unsigned char out[6])
 {
     char path[128];
     std::snprintf(path, sizeof(path), "/sys/class/net/%s/address", iface);
@@ -163,85 +166,86 @@ bool mac_do_sysfs(const char * iface, unsigned char out[6])
     return true;
 }
 
-void monta_frame(Ethernet::Frame * f, const Ethernet::Address & src,
+void build_frame(Ethernet::Frame * f, const Ethernet::Address & src,
                  unsigned int payload)
 {
-    // Nada de memset() aqui: Ethernet::Frame NÃO é trivially-constructible
-    // (Ethernet::Address tem construtor), e o g++ avisa com -Wclass-memaccess.
-    // Value-initialization do agregado zera tudo pelo caminho certo — é a mesma
-    // razão pela qual um `static Ethernet::Frame` dentro do drain() geraria
-    // guarda de inicialização.
+    // No memset() here: Ethernet::Frame is NOT trivially-constructible
+    // (Ethernet::Address has a constructor), and g++ warns with
+    // -Wclass-memaccess.  Value-initializing the aggregate zeroes everything
+    // through the proper path — the same reason a `static Ethernet::Frame`
+    // inside drain() would generate an initialization guard.
     *f = Ethernet::Frame{};
     f->dst = Ethernet::BROADCAST;
     f->src = src;
-    f->prot = htons(PROT); // host order dentro da lib, network order no fio
+    f->prot = htons(PROT); // host order inside the lib, network order on the wire
     for (unsigned int i = 0; i < payload; i++)
         f->data[i] = static_cast<unsigned char>(i + 1);
 }
 
 // =============================================================================
-// NÍVEL 0 — sem privilégio.
+// LEVEL 0 — no privileges.
 //
-// A interface não existe, então o construtor falha COM ou SEM CAP_NET_RAW (sem
-// privilégio ele nem chega no if_nametoindex: o socket() já volta EPERM).  O
-// teste é idêntico nas duas máquinas, que é o que se quer de um teste.
+// The interface does not exist, so the constructor fails WITH or WITHOUT
+// CAP_NET_RAW (without privileges it does not even reach if_nametoindex:
+// socket() already returns EPERM).  The test is identical on both machines,
+// which is what you want from a test.
 // =============================================================================
-void nivel_0()
+void level_0()
 {
-    std::printf("\n== nível 0: caminho de falha (sem privilégio) ==\n");
+    std::printf("\n== level 0: failure path (no privileges) ==\n");
 
-    Probe bad("vcomm-nada", PROT);
+    Probe bad("vcomm-nothing", PROT);
 
     CHECK(bad.engine_valid() == false);
     CHECK(bad.engine_start() == false);
     CHECK(bad.engine_rx_errors() == 0);
 
-    // Idempotência sobre Engine inválida.  É o guard do engine_stop() que
-    // impede um fcntl(-1, ...) aqui — sem ele isto suja errno em silêncio.
+    // Idempotence over an invalid Engine.  It is engine_stop()'s guard that
+    // prevents an fcntl(-1, ...) here — without it this silently dirties errno.
     bad.engine_stop();
     bad.engine_stop();
     CHECK(bad.engine_start() == false);
 
-    // Destrutor sobre Engine inválida: constrói e morre dentro do escopo.  Se
-    // o destrutor chamasse close(-1) ou fcntl(-1, ...) sem guard, é aqui que
-    // apareceria.
+    // Destructor over an invalid Engine: construct and die within the scope.  If
+    // the destructor called close(-1) or fcntl(-1, ...) without a guard, this is
+    // where it would show up.
     {
-        Probe tmp("vcomm-nada", PROT);
+        Probe tmp("vcomm-nothing", PROT);
         CHECK(tmp.engine_valid() == false);
     }
-    CHECK(true); // chegou até aqui == o destrutor não derrubou o processo
+    CHECK(true); // getting this far == the destructor did not take the process down
 }
 
 // =============================================================================
-// NÍVEL 1 — socket de verdade.  Precisa de CAP_NET_RAW.
+// LEVEL 1 — a real socket.  Needs CAP_NET_RAW.
 // =============================================================================
-void nivel_1(const char * iface)
+void level_1(const char * iface)
 {
-    std::printf("\n== nível 1: socket em '%s' ==\n", iface);
+    std::printf("\n== level 1: socket on '%s' ==\n", iface);
 
     Probe p(iface, PROT);
     CHECK(p.engine_valid() == true);
     if (!p.engine_valid()) {
-        std::printf("  (sem Engine válida, o resto do nível 1 não faz "
-                    "sentido)\n");
+        std::printf("  (without a valid Engine, the rest of level 1 makes no "
+                    "sense)\n");
         return;
     }
 
-    // ---- construtor: o MAC veio do kernel, não de constante -----------------
+    // ---- constructor: the MAC came from the kernel, not from a constant -----
     unsigned char sysfs[6];
-    if (mac_do_sysfs(iface, sysfs))
+    if (mac_from_sysfs(iface, sysfs))
         CHECK(std::memcmp(p.engine_address().bytes(), sysfs, 6) == 0);
     else
-        std::printf("  (sysfs indisponível; comparação de MAC pulada)\n");
+        std::printf("  (sysfs unavailable; MAC comparison skipped)\n");
 
-    // ---- o construtor instalou a disposição do SIGIO ------------------------
+    // ---- the constructor installed the SIGIO disposition --------------------
     struct sigaction cur;
     std::memset(&cur, 0, sizeof(cur));
     CHECK(::sigaction(SIGIO, NULL, &cur) == 0);
-    CHECK(cur.sa_handler != SIG_DFL); // ação default do SIGIO é MATAR o processo
-    CHECK((cur.sa_flags & SA_RESTART) == 0); // decisão de projeto: sem SA_RESTART
+    CHECK(cur.sa_handler != SIG_DFL); // SIGIO's default action is to KILL the process
+    CHECK((cur.sa_flags & SA_RESTART) == 0); // design decision: no SA_RESTART
 
-    // Encadeia o contador de sinais por cima do handler da Engine.
+    // Chains the signal counter on top of the Engine's handler.
     g_engine_handler = cur.sa_handler;
     struct sigaction mine = cur;
     mine.sa_handler = counting_handler;
@@ -252,53 +256,53 @@ void nivel_1(const char * iface)
     const unsigned int PAYLOAD = 32;
     const unsigned int SIZE = Ethernet::HEADER_SIZE + PAYLOAD;
     Ethernet::Frame f;
-    monta_frame(&f, p.engine_address(), PAYLOAD);
+    build_frame(&f, p.engine_address(), PAYLOAD);
 
-    sigset_t so_sigio, anterior;
-    sigemptyset(&so_sigio);
-    sigaddset(&so_sigio, SIGIO);
+    sigset_t just_sigio, previous;
+    sigemptyset(&just_sigio);
+    sigaddset(&just_sigio, SIGIO);
 
-    // ---- ida e volta de UM frame -------------------------------------------
+    // ---- round trip of ONE frame -------------------------------------------
     {
-        CHECK(::sigprocmask(SIG_BLOCK, &so_sigio, &anterior) == 0);
+        CHECK(::sigprocmask(SIG_BLOCK, &just_sigio, &previous) == 0);
 
         int sent = p.engine_send(&f, SIZE);
         CHECK(sent == static_cast<int>(SIZE));
-        CHECK(p.frames == 0); // bloqueado: nada foi entregue ainda
+        CHECK(p.frames == 0); // blocked: nothing has been delivered yet
 
-        CHECK(::sigprocmask(SIG_SETMASK, &anterior, NULL) == 0);
+        CHECK(::sigprocmask(SIG_SETMASK, &previous, NULL) == 0);
 
-        // Exatamente 1, não 2: a cópia PACKET_OUTGOING foi filtrada no drain().
+        // Exactly 1, not 2: the PACKET_OUTGOING copy was filtered in drain().
         CHECK(p.frames == 1);
         CHECK(p.oversize == 0);
         CHECK(std::memcmp(p.last, &f, SIZE) == 0);
     }
 
-    // ---- coalescência: N frames, UM sinal ----------------------------------
+    // ---- coalescing: N frames, ONE signal -----------------------------------
     const int N = 50;
     {
         sig_atomic_t f0 = p.frames;
         sig_atomic_t s0 = g_signals;
 
-        CHECK(::sigprocmask(SIG_BLOCK, &so_sigio, &anterior) == 0);
-        int enviados = 0;
+        CHECK(::sigprocmask(SIG_BLOCK, &just_sigio, &previous) == 0);
+        int sent_count = 0;
         for (int i = 0; i < N; i++)
             if (p.engine_send(&f, SIZE) == static_cast<int>(SIZE))
-                enviados++;
-        CHECK(enviados == N);
-        CHECK(::sigprocmask(SIG_SETMASK, &anterior, NULL) == 0);
+                sent_count++;
+        CHECK(sent_count == N);
+        CHECK(::sigprocmask(SIG_SETMASK, &previous, NULL) == 0);
 
-        // O drain() esvaziou a fila inteira a partir de um único sinal.  Se
-        // frames < N, o laço está saindo cedo.  Se signals > 1, o teste não
-        // provou coalescência (e aí o furado é o teste, não a Engine).
+        // drain() emptied the whole queue from a single signal.  If frames < N,
+        // the loop is leaving early.  If signals > 1, the test did not prove
+        // coalescing (and then the broken thing is the test, not the Engine).
         CHECK(p.frames - f0 == N);
         CHECK(g_signals - s0 == 1);
-        std::printf("     -> %d frames entregues por %d sinal(is)\n",
+        std::printf("     -> %d frames delivered by %d signal(s)\n",
                     static_cast<int>(p.frames - f0),
                     static_cast<int>(g_signals - s0));
     }
 
-    // ---- engine_stop(): para de sinalizar, NÃO descarta ---------------------
+    // ---- engine_stop(): stops signalling, does NOT discard ------------------
     {
         p.engine_stop();
         sig_atomic_t f1 = p.frames;
@@ -307,74 +311,76 @@ void nivel_1(const char * iface)
         for (int i = 0; i < N; i++)
             p.engine_send(&f, SIZE);
 
-        // Sem O_ASYNC não nasce sinal, então handle() não é chamado.
+        // Without O_ASYNC no signal is born, so handle() is not called.
         CHECK(p.frames == f1);
         CHECK(g_signals == s1);
 
-        p.engine_stop(); // idempotente
+        p.engine_stop(); // idempotent
         CHECK(p.frames == f1);
 
-        // Os N frames continuam na fila do kernel.  Rearmar e mandar mais um
-        // faz o drain() puxar os N parados + o novo: prova que stop silencia a
-        // notificação sem perder dado.
+        // The N frames are still in the kernel's queue.  Re-arming and sending
+        // one more makes drain() pull the N parked ones plus the new one: proof
+        // that stop silences the notification without losing data.
         CHECK(p.engine_start() == true);
-        CHECK(::sigprocmask(SIG_BLOCK, &so_sigio, &anterior) == 0);
+        CHECK(::sigprocmask(SIG_BLOCK, &just_sigio, &previous) == 0);
         CHECK(p.engine_send(&f, SIZE) == static_cast<int>(SIZE));
-        CHECK(::sigprocmask(SIG_SETMASK, &anterior, NULL) == 0);
+        CHECK(::sigprocmask(SIG_SETMASK, &previous, NULL) == 0);
         CHECK(p.frames - f1 == N + 1);
     }
 
-    // ---- diagnóstico de erro ------------------------------------------------
+    // ---- error diagnostics --------------------------------------------------
     //
-    // Num caminho limpo o contador tem que estar parado.  Isto NÃO prova que o
-    // braço de erro do drain() funciona — prova que ele não dispara sozinho.
+    // On a clean path the counter must stay put.  This does NOT prove drain()'s
+    // error arm works — it proves it does not fire on its own.
     //
-    // A prova positiva é manual, porque derrubar interface é coisa que uma
-    // suíte de testes não faz sem ser mandada:
+    // The positive proof is manual, because bringing an interface down is not
+    // something a test suite does unless told to:
     //
-    //   $ sudo ip link set <iface> down    # com a Engine armada
-    //   e o engine_rx_errors() tem que subir.
+    //   $ sudo ip link set <iface> down    # with the Engine armed
+    //   and engine_rx_errors() must go up.
     //
-    // Faça numa veth, nunca em `lo` — derrubar a loopback quebra a máquina.
+    // Do it on a veth, never on `lo` — bringing loopback down breaks the machine.
     CHECK(p.engine_rx_errors() == 0);
     if (p.engine_rx_errors() != 0)
-        std::printf("     -> último errno de RX: %d (%s)\n", p.engine_rx_error(),
+        std::printf("     -> last RX errno: %d (%s)\n", p.engine_rx_error(),
                     std::strerror(p.engine_rx_error()));
 
     p.engine_stop();
 
-    // Devolve a disposição do SIGIO como estava, para não vazar para outro teste.
+    // Restores the SIGIO disposition, so as not to leak into another test.
     ::sigaction(SIGIO, &cur, NULL);
     g_engine_handler = 0;
 }
 
 // =============================================================================
-// NÍVEL 1-E — a prova POSITIVA do braço de erro do drain().
+// LEVEL 1-E — the POSITIVE proof of drain()'s error arm.
 //
-// Os outros testes só mostram que engine_rx_errors() NÃO sobe sozinho.  Este
-// mostra que ele sobe quando deve.
+// The other tests only show that engine_rx_errors() does NOT go up by itself.
+// This one shows that it goes up when it should.
 //
-// O gatilho é derrubar a interface embaixo de um socket armado.  Em
-// packet_notifier(), NETDEV_DOWN sobre a interface do socket faz
-// `sk->sk_err = ENETDOWN` e chama sk_error_report(), que acorda o FASYNC — ou
-// seja, dispara um SIGIO.  O drain() entra, o recvfrom() consome o sk_err e
-// devolve -1/ENETDOWN, que não é EAGAIN nem EINTR: cai no terceiro braço.
+// The trigger is bringing the interface down underneath an armed socket.  In
+// packet_notifier(), NETDEV_DOWN on the socket's interface sets
+// `sk->sk_err = ENETDOWN` and calls sk_error_report(), which wakes FASYNC — that
+// is, it fires a SIGIO.  drain() runs, recvfrom() consumes the sk_err and
+// returns -1/ENETDOWN, which is neither EAGAIN nor EINTR: it lands on the third
+// arm.
 //
-// NÃO roda junto com o nível 1, por dois motivos:
+// It does NOT run together with level 1, for two reasons:
 //
-//   1. derrubar interface é coisa que suíte de teste não faz sem ser mandada;
-//   2. o meio tem que ser um par veth, não `lo`.  Em veth, o que sai por vcomm0
-//      chega em vcomm1 — o socket ligado em vcomm0 só veria a própria cópia
-//      PACKET_OUTGOING, que o drain() filtra.  As asserções de recepção do
-//      nível 1 dependem da auto-entrega da loopback e falhariam aqui.
+//   1. bringing an interface down is not something a test suite does unless
+//      told to;
+//   2. the medium must be a veth pair, not `lo`.  On a veth, what leaves through
+//      vcomm0 arrives at vcomm1 — a socket bound to vcomm0 would only see its
+//      own PACKET_OUTGOING copy, which drain() filters.  Level 1's reception
+//      assertions depend on loopback's self-delivery and would fail here.
 //
-// Quem orquestra é scripts/test-engine-veth.sh:
+// The orchestration lives in scripts/test-engine-veth.sh:
 //
 //     sudo scripts/test-engine-veth.sh
 // =============================================================================
-void nivel_erro(const char * iface)
+void level_error(const char * iface)
 {
-    std::printf("\n== nível 1-E: erro de RX em '%s' ==\n", iface);
+    std::printf("\n== level 1-E: RX error on '%s' ==\n", iface);
 
     Probe p(iface, PROT);
     CHECK(p.engine_valid() == true);
@@ -384,15 +390,16 @@ void nivel_erro(const char * iface)
     CHECK(p.engine_start() == true);
     CHECK(p.engine_rx_errors() == 0);
 
-    // Handshake com o script: só depois desta linha é que derrubar a interface
-    // testa alguma coisa.  fflush obrigatório — a saída está redirecionada para
-    // arquivo, e aí o stdout é block-buffered.
-    std::printf("PRONTO-PARA-ERRO\n");
+    // Handshake with the script: only after this line does bringing the
+    // interface down test anything.  The fflush is mandatory — the output is
+    // redirected to a file, which makes stdout block-buffered.
+    std::printf("READY-FOR-ERROR\n");
     std::fflush(stdout);
 
-    // Até ~10 s esperando o contador subir.  nanosleep pode voltar EINTR a cada
-    // sinal que chegar: a Engine instala o handler SEM SA_RESTART, de propósito.
-    // Aqui isso não incomoda — o laço só tenta de novo.
+    // Up to ~10 s waiting for the counter to rise.  nanosleep may return EINTR
+    // on every signal that arrives: the Engine installs the handler WITHOUT
+    // SA_RESTART, on purpose.  It does not hurt here — the loop just tries
+    // again.
     for (int i = 0; i < 1000 && p.engine_rx_errors() == 0; i++) {
         struct timespec ts;
         ts.tv_sec = 0;
@@ -402,7 +409,7 @@ void nivel_erro(const char * iface)
 
     CHECK(p.engine_rx_errors() > 0);
     if (p.engine_rx_errors() > 0) {
-        std::printf("     -> errno registrado: %d (%s)\n", p.engine_rx_error(),
+        std::printf("     -> errno recorded: %d (%s)\n", p.engine_rx_error(),
                     std::strerror(p.engine_rx_error()));
         CHECK(p.engine_rx_error() == ENETDOWN);
     }
@@ -419,33 +426,33 @@ int main()
     const char * env_iface = std::getenv("VCOMM_TEST_IFACE");
     const char * iface = env_iface ? env_iface : "lo";
 
-    // VCOMM_ERROR_TEST=1  -> só o nível 1-E, orquestrado pelo script da veth.
-    if (ligado("VCOMM_ERROR_TEST")) {
-        if (!tem_cap_net_raw()) {
-            ::test::report(false, "CAP_NET_RAW (VCOMM_ERROR_TEST exige)",
+    // VCOMM_ERROR_TEST=1  -> level 1-E only, orchestrated by the veth script.
+    if (enabled("VCOMM_ERROR_TEST")) {
+        if (!has_cap_net_raw()) {
+            ::test::report(false, "CAP_NET_RAW (VCOMM_ERROR_TEST requires it)",
                            __FILE__, __LINE__);
-            return ::test::summary("engine/erro");
+            return ::test::summary("engine/error");
         }
-        nivel_erro(iface);
-        return ::test::summary("engine/erro");
+        level_error(iface);
+        return ::test::summary("engine/error");
     }
 
-    nivel_0();
+    level_0();
 
-    if (tem_cap_net_raw()) {
-        nivel_1(iface);
+    if (has_cap_net_raw()) {
+        level_1(iface);
     } else {
-        std::printf("\n== nível 1: PULADO — sem CAP_NET_RAW ==\n");
+        std::printf("\n== level 1: SKIPPED — no CAP_NET_RAW ==\n");
         std::printf("   $ sudo setcap cap_net_raw+ep build/test-engine\n");
-        std::printf("   (o setcap vive no inode: REPITA depois de cada "
+        std::printf("   (setcap lives on the inode: REPEAT it after every "
                     "relink)\n");
 
-        // VCOMM_REQUIRE_RAW=1 transforma o pulo em falha.  É o que o `make
-        // check` usa: o alvo da avaliação não pode ficar verde tendo pulado o
-        // único teste que exercita o socket de verdade.
-        if (ligado("VCOMM_REQUIRE_RAW"))
+        // VCOMM_REQUIRE_RAW=1 turns the skip into a failure.  It is what `make
+        // check` uses: the evaluation target must not go green having skipped
+        // the only test that exercises a real socket.
+        if (enabled("VCOMM_REQUIRE_RAW"))
             ::test::report(false,
-                           "nível 1 executado (VCOMM_REQUIRE_RAW=1 exige)",
+                           "level 1 executed (VCOMM_REQUIRE_RAW=1 requires it)",
                            __FILE__, __LINE__);
     }
 

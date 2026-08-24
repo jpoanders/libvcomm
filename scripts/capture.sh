@@ -1,45 +1,48 @@
 #!/bin/bash
-# Captura o barramento virtual no HOST, em paralelo com a frota.
+# Captures the virtual bus on the HOST, in parallel with the fleet.
 #
-# Por que capturar no host e não dentro da VM: o guia é explícito — o tshark do
-# host carimba os dois sentidos com UM relógio só.  Comparar relógios de guests
-# diferentes antes da Etapa 3 (sincronização temporal) daria número sem sentido.
+# Why capture on the host and not inside the VM: the guide is explicit — the
+# host's tshark timestamps both directions with a SINGLE clock.  Comparing
+# clocks from different guests before Stage 3 (time synchronization) would give
+# meaningless numbers.
 set -euo pipefail
 
 CAPTURES="${CAPTURES:-build/captures}"
 export SO2_MCAST="${SO2_MCAST:-239.10.10.10:15424}"
 
-# QUAL INTERFACE CAPTURAR — descubra, não chute:
+# WHICH INTERFACE TO CAPTURE — find out, do not guess:
 #
 #     ip route get 239.10.10.10
 #
-# Nesta máquina, em 22/08/2026, a resposta foi `dev wlp0s20f3`, NÃO `lo`.
-# Duas consequências, e as duas importam:
+# On this machine, on 2026-08-22, the answer was `dev wlp0s20f3`, NOT `lo`.
+# Two consequences, and both matter:
 #
-#   1. capturar em `lo` devolve captura vazia e você perde uma hora achando que
-#      o problema é o seu código;
-#   2. o barramento do grupo está SAINDO PELA WIFI — ou seja, para a rede do
-#      prédio.  Isso pode colidir com outro grupo no mesmo laboratório e ainda
-#      põe o tráfego do projeto na rede da universidade.  Para prender o
-#      barramento à máquina:
+#   1. capturing on `lo` returns an empty capture and you lose an hour thinking
+#      the problem is your code;
+#   2. the group's bus is GOING OUT OVER WIFI — that is, onto the building's
+#      network.  It may collide with another group in the same lab and it also
+#      puts the project's traffic on the university network.  To pin the bus to
+#      the machine:
 #
 #          sudo ip route add 239.10.10.0/24 dev lo
 #
-#      (precisa de sudo; some no reboot).  Faça isso ANTES da apresentação e
-#      confira de novo com `ip route get` — a rota muda se você trocar de rede.
+#      (needs sudo; disappears on reboot).  Do this BEFORE the presentation and
+#      check again with `ip route get` — the route changes if you switch
+#      networks.
 #
 # TODO(joao):
-#   - o QEMU encapsula o frame Ethernet do guest DENTRO de um datagrama UDP.
-#     O EtherType 0x88B5 está no payload UDP, não no cabeçalho que o tshark
-#     mostra de cara — conte os offsets a partir do começo dos dados UDP.
-#   - dumpcap já tem cap_net_admin,cap_net_raw nesta máquina — não precisa sudo.
-#   - filtro sugerido: udp port <porta do SO2_MCAST>
-#   - gravar em "$CAPTURES/fleet.pcapng"
-#   - subir a captura ANTES da frota e derrubar DEPOIS, senão você perde os
-#     primeiros frames — que são justamente os que você quer.
+#   - QEMU encapsulates the guest's Ethernet frame INSIDE a UDP datagram.
+#     EtherType 0x88B5 is in the UDP payload, not in the header tshark shows
+#     up front — count the offsets from the start of the UDP data.
+#   - dumpcap already has cap_net_admin,cap_net_raw on this machine — no sudo
+#     needed.
+#   - suggested filter: udp port <port from SO2_MCAST>
+#   - write to "$CAPTURES/fleet.pcapng"
+#   - start the capture BEFORE the fleet and stop it AFTER, otherwise you lose
+#     the first frames — which are exactly the ones you want.
 #
-# LIMITE QUE O GUIA MANDA RESPEITAR: ver o datagrama sair no host NÃO prova que
-# um guest processou a mensagem.  A prova de correção é o log das VMs; a captura
-# é prova de formato e de tempo.
-echo "TODO: implementar capture.sh"
+# LIMIT THE GUIDE REQUIRES YOU TO RESPECT: seeing the datagram leave on the host
+# does NOT prove a guest processed the message.  The proof of correctness is the
+# VM logs; the capture is proof of format and of timing.
+echo "TODO: implement capture.sh"
 exit 1

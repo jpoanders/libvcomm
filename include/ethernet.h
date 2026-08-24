@@ -5,30 +5,33 @@
 #include "traits.h"
 
 // =============================================================================
-// class Ethernet — "all necessary definitions and formats", nas palavras do
-// PDF.
+// class Ethernet — "all necessary definitions and formats", in the PDF's own
+// words.
 //
-// Esta classe NÃO fala com o kernel.  Ela só descreve o formato do que viaja no
-// fio.  Quem executa syscall é a Engine.  Manter essa separação é metade da
-// resposta para "por que a Engine isola o raw socket?".
+// This class does NOT talk to the kernel.  It only describes the format of what
+// travels on the wire.  The Engine is what makes syscalls.  Keeping that
+// separation is half the answer to "why does the Engine isolate the raw
+// socket?".
 // =============================================================================
 
 class Ethernet
 {
 public:
-    // Maior payload que cabe num frame sem fragmentação.  O enunciado garante
-    // que toda mensagem do projeto é menor que isso => nunca fragmentamos.
+    // Largest payload that fits in a frame without fragmentation.  The
+    // assignment guarantees every project message is smaller than this => we
+    // never fragment.
     static const unsigned int MTU = 1500;
     static const unsigned int HEADER_SIZE = 14;
 
-    // EtherType.  ATENÇÃO: no fio ele vai em network byte order (big-endian).
-    // Dentro da biblioteca guardamos em host order e convertemos com htons()
-    // apenas na fronteira da Engine.  Escolher uma convenção e não misturar as
-    // duas é o que evita o bug clássico de "o receptor nunca vê nada".
+    // EtherType.  WARNING: on the wire it goes in network byte order
+    // (big-endian).  Inside the library we keep it in host order and convert
+    // with htons() only at the Engine boundary.  Picking one convention and not
+    // mixing the two is what avoids the classic "the receiver never sees
+    // anything" bug.
     typedef unsigned short Protocol;
 
     // -------------------------------------------------------------------------
-    // Address — um MAC address de 6 bytes.  NIC::Address *é* isto.
+    // Address — a 6-byte MAC address.  NIC::Address *is* this.
     // -------------------------------------------------------------------------
     class Address
     {
@@ -66,8 +69,7 @@ public:
         }
         bool operator!=(const Address & a) const { return !(*this == a); }
 
-        // Verdadeiro se o endereço não for todo zero.  Usado por
-        // Protocol::Address.
+        // True if the address is not all zeros.  Used by Protocol::Address.
         operator bool() const
         {
             for (unsigned int i = 0; i < sizeof(_addr); i++)
@@ -76,20 +78,19 @@ public:
             return false;
         }
 
-        // Escreve "aa:bb:cc:dd:ee:ff" em buf (>= 18 bytes).  Devolve buf.
+        // Writes "aa:bb:cc:dd:ee:ff" into buf (>= 18 bytes).  Returns buf.
         char * to_string(char * buf) const;
 
     private:
         unsigned char _addr[6];
     } __attribute__((packed));
 
-    // Destino OBRIGATÓRIO de todo frame do projeto: o meio modela uma célula de
-    // rádio, não um cabo ponto a ponto.  (full_assignment.pdf,
-    // "Identificadores")
+    // MANDATORY destination of every project frame: the medium models a radio
+    // cell, not a point-to-point cable.  (full_assignment.pdf, "Identifiers")
     static const Address BROADCAST;
 
     // -------------------------------------------------------------------------
-    // Header / Frame — o layout literal do fio.
+    // Header / Frame — the literal wire layout.
     //
     //   +--------------+--------------+-----------+------------------+
     //   | destination  | source       | EtherType | payload          |
@@ -100,7 +101,7 @@ public:
     {
         Address dst;
         Address src;
-        Protocol prot; // network order quando no fio
+        Protocol prot; // network order when on the wire
     } __attribute__((packed));
 
     struct Frame : public Header
@@ -109,8 +110,9 @@ public:
     } __attribute__((packed));
 
     // -------------------------------------------------------------------------
-    // Statistics — o PDF pede NIC::statistics().  Contadores vivem aqui porque
-    // são conceito de enlace, não de uma Engine específica.
+    // Statistics — the PDF asks for NIC::statistics().  The counters live here
+    // because they are a link-layer concept, not something specific to one
+    // Engine.
     // -------------------------------------------------------------------------
     struct Statistics
     {
@@ -124,16 +126,16 @@ public:
         unsigned int rx_packets;
         unsigned int rx_bytes;
         unsigned int
-            rx_dropped; // frame chegou mas não havia buffer / observador
+            rx_dropped; // frame arrived but there was no buffer / observer
     };
 };
 
-// O header de enlace tem 14 bytes.  Se esta linha falhar, algum campo ganhou
-// padding e o frame no fio está errado — o compilador avisa antes da VM.
+// The link header is 14 bytes.  If this line fails, some field gained padding
+// and the frame on the wire is wrong — the compiler warns before the VM does.
 static_assert(sizeof(Ethernet::Header) == 14,
-              "Ethernet::Header precisa ter 14 bytes");
+              "Ethernet::Header must be 14 bytes");
 static_assert(sizeof(Ethernet::Address) == 6,
-              "Ethernet::Address precisa ter 6 bytes");
+              "Ethernet::Address must be 6 bytes");
 
 inline const Ethernet::Address Ethernet::BROADCAST(0xff, 0xff, 0xff, 0xff, 0xff,
                                                    0xff);
