@@ -93,6 +93,30 @@ O PDF marca o construtor como `protected` (no EPOS, a instância vem de
 Membro estático de classe aninhada dentro de template exige definição fora da
 classe. Uma função estática dá o mesmo resultado sem a cerimônia.
 
+### 1.10 `send(Buffer *)` libera o buffer incondicionalmente
+
+O enunciado não especifica quem libera o buffer após `send(Buffer *)`. A alternativa
+natural seria: libera em caso de sucesso, devolve ao chamador em caso de erro.
+
+**Decisão:** `send(Buffer *)` chama `free(buf)` em **todos** os caminhos, sucesso
+e falha. Depois de chamar `send`, o chamador **não pode** tocar no buffer.
+
+**Por quê.** O pool tem capacidade fixa (`SEND_BUFFERS + RECEIVE_BUFFERS`). Se a
+responsabilidade de liberar em caso de erro for do chamador, um único `free`
+esquecido num caminho de erro trava um slot permanentemente. Depois de 32
+envios falhos sem `free`, o pool esgota e `alloc()` devolve `0` para sempre. Esse bug só aparece sob carga, tipicamente na demonstração.
+
+Com a liberação incondicional:
+
+- **Regra única de ownership:** `send` é transferência de posse. Sem lógica
+  condicional para o chamador.
+- **Vazamento impossível:** o buffer volta ao pool em qualquer caminho.
+- **Coerência com `send(Address, prot, data, size)`:** o caminho simples já
+  chama `alloc` + `send(buf)` internamente, então o ciclo de vida é autocontido.
+
+**Consequência:** o chamador não pode retentar com o mesmo buffer. Se `send` falhar e
+houver necessidade de retentativa, é preciso `alloc` novo e remontar o frame.
+
 ---
 
 ## 2. Decisões próprias
