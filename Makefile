@@ -45,8 +45,14 @@ all: app test-support
 	@echo "  (image/fleet/capture/stats ainda são esqueleto — veja os TODO no Makefile)"
 
 # Alvo final da avaliação: é ISTO que o enunciado quer que `make` faça.
+#
+# VCOMM_REQUIRE_RAW=1 faz o test-engine FALHAR em vez de pular o nível 1 quando
+# não há CAP_NET_RAW.  O alvo da avaliação não pode ficar verde tendo pulado o
+# único teste que abre socket de verdade.  Rodando `make test-engine` sozinho a
+# variável não está setada e o pulo continua amigável.
 .PHONY: check
-check: app test-support test-stack image fleet capture stats
+check: export VCOMM_REQUIRE_RAW := 1
+check: app test-support test-stack test-engine image fleet capture stats
 
 # -----------------------------------------------------------------------------
 .PHONY: app
@@ -59,7 +65,7 @@ $(BUILD)/student-app: $(APP_SRC) $(HEADERS) | $(BUILD)
 	@echo "  ok: $@ é x86-64 estático"
 
 # -----------------------------------------------------------------------------
-.PHONY: test-support test-stack
+.PHONY: test-support test-stack test-engine
 test-support: $(BUILD)/test-support
 	@echo
 	./$(BUILD)/test-support
@@ -68,11 +74,20 @@ test-stack: $(BUILD)/test-stack
 	@echo
 	./$(BUILD)/test-stack
 
+# Roda sem privilégio (nível 1 se pula sozinho).  Para exercitar o socket de
+# verdade, uma vez:  sudo setcap cap_net_raw+ep $(BUILD)/test-engine
+test-engine: $(BUILD)/test-engine
+	@echo
+	./$(BUILD)/test-engine
+
 $(BUILD)/test-support: tests/test_support.cpp tests/check.h $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Itests tests/test_support.cpp -o $@ $(LDFLAGS)
 
 $(BUILD)/test-stack: tests/test_stack.cpp tests/check.h $(APP_SRC) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Itests tests/test_stack.cpp $(LIB_SRC) -o $@ $(LDFLAGS)
+
+$(BUILD)/test-engine: tests/test_engine.cpp tests/check.h $(LIB_SRC) $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -Itests tests/test_engine.cpp $(LIB_SRC) -o $@ $(LDFLAGS)
 
 # -----------------------------------------------------------------------------
 .PHONY: image
@@ -117,6 +132,7 @@ $(BUILD):
 .PHONY: clean
 clean:
 	rm -rf $(BUILD)/student-app $(BUILD)/test-support $(BUILD)/test-stack \
+	       $(BUILD)/test-engine \
 	       $(BUILD)/logs $(BUILD)/captures
 
 .PHONY: help
@@ -124,6 +140,8 @@ help:
 	@echo "make app           compila o binário estático da VM"
 	@echo "make test-support  testa as classes de apoio (deve passar hoje)"
 	@echo "make test-stack    testa a pilha (falha até você implementar)"
+	@echo "make test-engine   testa a Engine (nível 1 precisa de CAP_NET_RAW)"
+	@echo "                   prova do erro de RX: sudo scripts/test-engine-veth.sh"
 	@echo "make image         injeta no initramfs          [TODO]"
 	@echo "make fleet         sobe as 5 VMs                [TODO]"
 	@echo "make capture       captura o barramento         [TODO]"

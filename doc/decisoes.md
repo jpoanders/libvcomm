@@ -127,6 +127,14 @@ sinal só. Mas isso **não custa nenhum frame** aqui, porque a garantia real nã
 o sinal e sim o laço de drenagem (abaixo): quando o handler roda, ele recolhe
 tudo que estiver no buffer do kernel.
 
+**Medido, não argumentado** (24/08/2026, `make test-engine` com
+`cap_net_raw+ep`, interface `lo`): com o `SIGIO` bloqueado por `sigprocmask()`,
+50 frames enviados em rajada geraram **um** sinal pendente, e o `drain()`
+entregou os **50** ao `handle()` a partir dessa única entrada no handler. É a
+coalescência acontecendo — e é exatamente por isso que ela não custa frame.
+O teste é determinístico: não há `sleep` nem tolerância, porque o POSIX garante
+a entrega do sinal pendente antes do retorno do `sigprocmask()` que desbloqueia.
+
 Contra os de tempo real havia um modo de falha a mais. Se a fila de sinais
 enfileirados estourar, *"the kernel reverts to delivering `SIGIO`"* (`man 2
 fcntl`, `F_SETSIG`) — e a ação padrão do `SIGIO` no Linux é **terminar o
@@ -143,6 +151,20 @@ chama `recvfrom` repetidamente até `EAGAIN`. O sinal é o gatilho; o laço é a
 garantia, e é ele que torna o coalescimento inofensivo. Sair no primeiro frame
 deixaria os demais parados no buffer do kernel até a chegada do próximo — e a
 latência medida viraria ficção.
+
+**Três braços de saída, não dois.** `EAGAIN`/`EWOULDBLOCK` é fim normal e sai
+calado; `EINTR` continua; qualquer outro `errno` é registrado antes de sair. O
+registro não pode imprimir — o `drain()` roda dentro do handler —, então vai
+para contadores `volatile sig_atomic_t` monotônicos que o laço principal lê
+(`engine_rx_errors()` / `engine_rx_error()`). Sem esse terceiro braço, uma
+interface que cai se manifesta como recepção que simplesmente emudece, sem
+rastro.
+
+*Medido* (24/08/2026, `sudo scripts/test-engine-veth.sh`): com a Engine armada
+sobre um par `veth`, um `ip link set vcomm0 down` fez `packet_notifier()` setar
+`sk_err = ENETDOWN` e disparar o `SIGIO`; o `recvfrom()` do `drain()` consumiu o
+erro e o contador registrou **`errno` 100, `ENETDOWN`**. O `NETDEV_DOWN` bastou
+— não foi preciso escalar para a remoção do device.
 
 **Contrapartida documentada:** disposição de sinal é estado global do processo,
 logo **uma Engine por processo**. Na Etapa 1 isso não incomoda (um processo = um
