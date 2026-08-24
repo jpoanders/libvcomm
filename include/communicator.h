@@ -70,55 +70,44 @@ template <typename Channel>
 Communicator<Channel>::Communicator(Channel * channel, Address address)
     : _channel(channel), _address(address)
 {
-    // TODO(joao): _channel->attach(this, _address);
+    _channel->attach(this, _address);
 }
 
 template <typename Channel> Communicator<Channel>::~Communicator()
 {
+<<<<<<< HEAD
     // TODO(joao): _channel->detach(this, _address);
     // The PDF writes `Channel::detach(this, _address)` — a static call in an
     // instance method.  Use the instance form; record the deviation.
+=======
+    _channel->detach(this, _address);
+>>>>>>> main
 }
 
 template <typename Channel>
 bool Communicator<Channel>::send(const Message * message)
 {
-    // TODO(joao):
-    //     return _channel->send(_address,
-    //                           Address::broadcast(),
-    //                           message->data(),
-    //                           message->size()) > 0;
-    (void)message;
-    return false;
+    return _channel->send(_address, Address::broadcast(), message->data(),
+                          message->size()) > 0;
 }
 
 template <typename Channel>
 bool Communicator<Channel>::receive(Message * message)
 {
-    // TODO(joao): the four most important lines in the library.
-    //
-    //     Buffer * buf = Observer::updated();   // <<< sleeps here until
-    //     something arrives Address from; int size = _channel->receive(buf,
-    //     &from, message->data(), Message::MAX_SIZE); if(size > 0) {
-    //     message->size(size); return true; } return false;
-    //
-    // PITFALL: the PDF passes `message->size()` as the capacity.  On a
-    // freshly constructed message that is 0 and you receive zero bytes forever,
-    // with no error at all.  Pass the CAPACITY on the way in and write the
-    // received size on the way out — do not use the same field for both.
-    //
-    // PITFALL 2: updated() may return 0 if you post the semaphore at shutdown
-    // to unblock the application.  Handle that or the automated test will die
-    // with a segfault on shutdown.
-    //
-    // PITFALL 3, new with the signal model: sem_wait() inside p() comes back
-    // with EINTR when a frame arrives while you are waiting — UNLESS SIGIO's
-    // sigaction has SA_RESTART.  Measured in both configurations on
-    // 2026-08-23: without SA_RESTART -> -1/EINTR(4); with SA_RESTART -> 0, and
-    // sem_wait resumes on its own.  sem.h already does the EINTR loop either
-    // way, and that is how it should be: the loop costs two lines and holds
-    // under both choices.  If you write your own p(), do not forget it.
-    (void)message;
+    Buffer * buf = Observer::updated(); // <<< blocks here (semaphore p())
+
+    if (!buf)
+        return false;
+
+    Address from;
+    unsigned char tmp[Message::MAX_SIZE];
+    int size = _channel->receive(buf, &from, tmp, Message::MAX_SIZE);
+    // buf is freed by _channel->receive() do not touch buf after this
+
+    if (size > 0) {
+        message->set(tmp, static_cast<unsigned int>(size));
+        return true;
+    }
     return false;
 }
 
@@ -126,12 +115,7 @@ template <typename Channel>
 void Communicator<Channel>::update(
     const typename Channel::Observer::Observing_Condition & c, Buffer * buf)
 {
-    // TODO(joao): Observer::update(c, buf);
-    // One line: enqueue and do v().  It is what releases the thread parked in
-    // receive().  Do not process the message here — you are INSIDE A SIGNAL
-    // HANDLER, with the interrupted thread stopped waiting for you to leave.
-    (void)c;
-    (void)buf;
+    Observer::update(c, buf);
 }
 
 #endif // LIBVCOMM_COMMUNICATOR_H

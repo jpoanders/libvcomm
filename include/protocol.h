@@ -175,82 +175,85 @@ private:
 template <typename NIC_T>
 Protocol<NIC_T>::Protocol(NIC_T * nic) : NIC_T::Observer(PROTO), _nic(nic)
 {
-    // TODO(joao): register with the NIC for our EtherType.
-    //     _nic->attach(this, PROTO);
+    _nic->attach(this, PROTO);
 }
 
 template <typename NIC_T> Protocol<NIC_T>::~Protocol()
 {
-    // TODO(joao): _nic->detach(this, PROTO);
-    // Without this, the NIC keeps a pointer to a destroyed object and the next
-    // frame that arrives calls a method on dead memory.
+    _nic->detach(this, PROTO);
 }
 
 template <typename NIC_T>
 int Protocol<NIC_T>::send(Address from, Address to, const void * data,
                           unsigned int size)
 {
-    // TODO(joao): the recipe is in the PDF itself:
-    //     Buffer * buf = _nic->alloc(to.paddr(), PROTO, sizeof(Header) + size);
-    //     build the Header (source/destination ports, length) in the frame
-    //     payload, copy `data` right after the Header, return _nic->send(buf);
-    // Remember: `to.paddr()` in Stage 1 is ALWAYS broadcast — the assignment
-    // requires it.
-    (void)from;
-    (void)to;
-    (void)data;
-    (void)size;
-    return -1;
+    Buffer * buf = _nic->alloc(to.paddr(), PROTO, sizeof(Header) + size);
+    if (!buf)
+        return -1;
+
+    // nic alloc already filled the ethernet header (dst, src, prot)
+    Packet * pkt = reinterpret_cast<Packet *>(buf->frame()->data);
+    pkt->_from_port = from.port();
+    pkt->_to_port = to.port();
+    pkt->_length = size;
+
+    // copy application data right after the protocol header
+    std::memcpy(pkt->template data<void>(), data, size);
+
+    return _nic->send(buf);
 }
 
 template <typename NIC_T>
 int Protocol<NIC_T>::receive(Buffer * buf, Address * from, void * data,
                              unsigned int size)
 {
-    // TODO(joao):
-    //     _nic->unmarshal(...) to get the source MAC and the payload
-    //     read the Header to find the source port -> build *from
-    //     copy the protocol payload into `data`
-    //     _nic->free(buf);   <<< ALWAYS, including on the error path
-    (void)buf;
-    (void)from;
-    (void)data;
-    (void)size;
-    return -1;
+    // unmarshal the ethernet layer to get the source MAC and raw payload
+    Physical_Address src_mac;
+    unsigned char raw_payload[Ethernet::MTU];
+    int payload_bytes =
+        _nic->unmarshal(buf, &src_mac, 0, raw_payload, sizeof(raw_payload));
+
+    if (payload_bytes < static_cast<int>(sizeof(Header))) {
+        _nic->free(buf); // always free, even on error path
+        return -1;
+    }
+
+    // read the protocol header from the start of the payload
+    const Header * hdr = reinterpret_cast<const Header *>(raw_payload);
+
+    if (from)
+        *from = Address(src_mac, hdr->_from_port);
+
+    // use the _length field from the header, reliable across all engines
+    unsigned int data_bytes = hdr->_length;
+    unsigned int to_copy = (data_bytes < size) ? data_bytes : size;
+    std::memcpy(data, raw_payload + sizeof(Header), to_copy);
+
+    _nic->free(buf); // always free, ownership ends here
+    return static_cast<int>(to_copy);
 }
 
 template <typename NIC_T>
 void Protocol<NIC_T>::attach(Observer * obs, const Address & address)
 {
-    // TODO(joao): _observed.attach(obs, address.port());
-    // The condition is the PORT, not the whole Address: two Communicators with
-    // the same paddr and different ports must be distinguishable.
-    (void)obs;
-    (void)address;
+    _observed.attach(obs, address.port());
 }
 
 template <typename NIC_T>
 void Protocol<NIC_T>::detach(Observer * obs, const Address & address)
 {
-    // TODO(joao): _observed.detach(obs, address.port());
-    (void)obs;
-    (void)address;
+    _observed.detach(obs, address.port());
 }
 
 template <typename NIC_T>
 void Protocol<NIC_T>::update(const Protocol_Number & prot, Buffer * buf)
 {
-    // TODO(joao): this method is short and it is the heart of the stack.  The
-    // PDF already gives it:
-    //
-    //     if(!_observed.notify(<destination port read from the Header>, buf))
-    //         _nic->free(buf);
-    //
-    // Translated: if no Communicator was listening on that port, the frame is
-    // of no interest to anyone and the buffer goes back to the pool NOW.  If
-    // one was, ownership passes to it and its receive() is what releases it.
     (void)prot;
-    (void)buf;
+
+    const Packet * pkt = reinterpret_cast<const Packet *>(buf->frame()->data);
+
+    if (!_observed.notify(pkt->_to_port, buf))
+        _nic->free(buf);
 }
 
 #endif // LIBVCOMM_PROTOCOL_H
