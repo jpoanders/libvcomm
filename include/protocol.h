@@ -7,42 +7,45 @@
 #include "observer.h"
 
 // =============================================================================
-// Protocol<NIC> — multiplexa UMA NIC entre VÁRIOS interlocutores.
+// Protocol<NIC> — multiplexes ONE NIC across SEVERAL peers.
 //
-// A NIC separa por EtherType (todos os frames do projeto têm o mesmo).  O
-// Protocol separa por Port: é ele que decide qual processo, dentro da VM, deve
-// acordar com a mensagem que chegou.
+// The NIC separates by EtherType (every project frame has the same one).  The
+// Protocol separates by Port: it is what decides which process, inside the VM,
+// should wake up with the message that arrived.
 //
-// DUAS CARAS, e é isso que confunde na primeira leitura:
+// TWO FACES, and this is what confuses on a first reading:
 //
-//   - Como OBSERVADOR da NIC:  herda NIC::Observer e implementa update().
-//     Roda DENTRO DO SIGNAL HANDLER, não pode bloquear.
-//   - Como OBSERVADO pelos Communicators: tem um
-//   Concurrent_Observed<Buffer,Port>
-//     dentro de si.  Este sim desacopla por semáforo — do outro lado tem uma
-//     thread de aplicação dormindo.
+//   - As an OBSERVER of the NIC: it inherits NIC::Observer and implements
+//     update().  Runs INSIDE THE SIGNAL HANDLER, must not block.
+//   - As OBSERVED by the Communicators: it holds a
+//     Concurrent_Observed<Buffer,Port>
+//     inside itself.  That one does decouple through a semaphore — on the other
+//     side there is an application thread asleep.
 //
-// É essa dobra que faz a recepção ser assíncrona ponta a ponta sem rendezvous.
+// It is this fold that makes reception asynchronous end to end without a
+// rendezvous.
 // =============================================================================
 //
-// DESVIOS DO PDF (todos anotados em doc/decisoes.md):
+// DEVIATIONS FROM THE PDF (all recorded in doc/design-decisions.md):
 //
-//  1. O PDF escreve `class Protocol: private typename NIC::Observer`.  O
-//     `typename` não pode aparecer numa lista de bases — em base-clause o nome
-//     já é lido como tipo.  Removido.
+//  1. The PDF writes `class Protocol: private typename NIC::Observer`.  The
+//     `typename` cannot appear in a base list — in a base-clause the name is
+//     already read as a type.  Removed.
 //
-//  2. O PDF declara `typedef Conditional_Data_Observer<..., Port> Observer;`,
-//     mas o Communicator do próprio PDF herda de Concurrent_Observer.  As duas
-//     coisas não encaixam.  Quem manda é o Communicator: aqui Observer é
-//     Concurrent_Observer — é ele que tem o semáforo que a aplicação precisa.
+//  2. The PDF declares `typedef Conditional_Data_Observer<..., Port> Observer;`
+//     but the PDF's own Communicator inherits from Concurrent_Observer.  The
+//     two do not fit together.  The Communicator wins: here Observer is
+//     Concurrent_Observer — it is the one with the semaphore the application
+//     needs.
 //
-//  3. O PDF declara send()/receive() `static` mas usa `_nic`, que é membro de
-//     instância; e o Communicator os chama como `_channel->send(...)`.  Aqui
-//     são métodos de instância.
+//  3. The PDF declares send()/receive() `static` but uses `_nic`, which is an
+//     instance member; and the Communicator calls them as
+//     `_channel->send(...)`.  Here they are instance methods.
 //
-//  4. O PDF tem `static Observed _observed;` ("channel protocols are usually
-//     singletons").  Membro estático de template exige definição fora da classe
-//     e impede dois protocolos no mesmo processo.  Aqui é membro de instância.
+//  4. The PDF has `static Observed _observed;` ("channel protocols are usually
+//     singletons").  A static member of a template requires an out-of-class
+//     definition and prevents two protocols in the same process.  Here it is an
+//     instance member.
 
 template <typename NIC_T> class Protocol : private NIC_T::Observer
 {
@@ -51,10 +54,10 @@ public:
     typedef typename NIC_T::Address Physical_Address;
     typedef typename NIC_T::Protocol_Number Protocol_Number;
 
-    // O PDF escreve literalmente `typedef XXX Port;` — a escolha é sua.
-    // unsigned short cobre a Etapa 1.  Na Etapa 2 o enunciado provoca: usar o
-    // PID é tentador e barato, mas como a VM 2 saberia o PID de um processo da
-    // VM 1?  Decida agora ou pague depois.
+    // The PDF literally writes `typedef XXX Port;` — the choice is yours.
+    // unsigned short covers Stage 1.  In Stage 2 the assignment provokes you:
+    // using the PID is tempting and cheap, but how would VM 2 know the PID of a
+    // process on VM 1?  Decide now or pay later.
     typedef unsigned short Port;
 
     static const Protocol_Number PROTO = Traits<Ethernet>::PROTOCOL_NUMBER;
@@ -63,7 +66,7 @@ public:
     typedef Concurrent_Observed<Buffer, Port> Observed;
 
     // -------------------------------------------------------------------------
-    // Address = (endereço físico, porta).  É o endereço LÓGICO da biblioteca.
+    // Address = (physical address, port).  It is the library's LOGICAL address.
     // -------------------------------------------------------------------------
     class Address
     {
@@ -88,9 +91,9 @@ public:
         }
         bool operator!=(const Address & a) const { return !(*this == a); }
 
-        // O PDF escreve `Channel::Address::BROADCAST`.  Um membro estático de
-        // classe aninhada dentro de template precisa de definição fora da
-        // classe; uma função estática dá o mesmo resultado sem a cerimônia.
+        // The PDF writes `Channel::Address::BROADCAST`.  A static member of a
+        // nested class inside a template needs an out-of-class definition; a
+        // static function gives the same result without the ceremony.
         static Address broadcast(Port p = 0)
         {
             return Address(Ethernet::BROADCAST, p);
@@ -102,27 +105,27 @@ public:
     } __attribute__((packed));
 
     // -------------------------------------------------------------------------
-    // Header / Packet — o que o Protocol acrescenta ao payload do Ethernet.
+    // Header / Packet — what the Protocol adds to the Ethernet payload.
     //
-    // >>> DECISÃO DE PROJETO SUA, e ela tem consequência real:
-    //     você MEDIU que o virtio-net do QEMU não faz padding para 60 bytes, e
-    //     por isso `tamanho = bytes_recebidos - 14` funciona nesta bancada.  Em
-    //     hardware real, e na Engine de memória compartilhada da Etapa 2, não
-    //     funciona.  Se você quer o tamanho correto em qualquer meio, um campo
-    //     `length` aqui resolve de uma vez.  As Etapas 2 a 6 vão pedir origem,
-    //     timestamp, tipo e MAC — este Header é onde eles entram.
+    // >>> YOUR OWN DESIGN DECISION, and it has a real consequence:
+    //     you MEASURED that QEMU's virtio-net does not pad to 60 bytes, and
+    //     that is why `size = bytes_received - 14` works on this bench.  On
+    //     real hardware, and on Stage 2's shared-memory Engine, it does not.
+    //     If you want the correct size on any medium, a `length` field here
+    //     settles it once and for all.  Stages 2 through 6 will ask for origin,
+    //     timestamp, type and MAC — this Header is where they go.
     // -------------------------------------------------------------------------
     class Header
     {
     public:
         Header() : _from_port(0), _to_port(0), _length(0) {}
 
-        // TODO(joao): confirme os campos que a Etapa 1 realmente precisa e
-        // acrescente os acessores.  Menos é mais aqui — cada byte deste
-        // cabeçalho é payload que você perde.
+        // TODO(joao): confirm which fields Stage 1 actually needs and add the
+        // accessors.  Less is more here — every byte of this header is payload
+        // you lose.
         Port _from_port;
         Port _to_port;
-        unsigned short _length; // bytes de payload; ver a nota acima
+        unsigned short _length; // payload bytes; see the note above
     } __attribute__((packed));
 
     static const unsigned int MTU = Ethernet::MTU - sizeof(Header);
@@ -147,20 +150,20 @@ public:
     explicit Protocol(NIC_T * nic);
     ~Protocol();
 
-    // Contrato: devolve bytes de payload enviados, ou -1.
+    // Contract: returns payload bytes sent, or -1.
     int send(Address from, Address to, const void * data, unsigned int size);
 
-    // Consome um buffer JÁ recebido (o Communicator o pegou de updated()).
-    // Contrato: preenche `from`, copia até `size` bytes e LIBERA o buffer —
-    // com sucesso ou não.  A posse termina aqui.
+    // Consumes an ALREADY received buffer (the Communicator got it from
+    // updated()).  Contract: fills `from`, copies up to `size` bytes and
+    // RELEASES the buffer — success or not.  Ownership ends here.
     int receive(Buffer * buf, Address * from, void * data, unsigned int size);
 
     void attach(Observer * obs, const Address & address);
     void detach(Observer * obs, const Address & address);
 
 private:
-    // Chamado pela NIC, DENTRO DO SIGNAL HANDLER.  Não pode bloquear, e está
-    // sujeito a async-signal-safety (man 7 signal-safety).
+    // Called by the NIC, INSIDE THE SIGNAL HANDLER.  Must not block, and is
+    // subject to async-signal-safety (man 7 signal-safety).
     void update(const Protocol_Number & prot, Buffer * buf) override;
 
     NIC_T * _nic;
@@ -191,8 +194,8 @@ int Protocol<NIC_T>::send(Address from, Address to, const void * data,
     // nic alloc already filled the ethernet header (dst, src, prot)
     Packet * pkt = reinterpret_cast<Packet *>(buf->frame()->data);
     pkt->_from_port = from.port();
-    pkt->_to_port   = to.port();
-    pkt->_length    = size;
+    pkt->_to_port = to.port();
+    pkt->_length = size;
 
     // copy application data right after the protocol header
     std::memcpy(pkt->template data<void>(), data, size);
@@ -207,11 +210,11 @@ int Protocol<NIC_T>::receive(Buffer * buf, Address * from, void * data,
     // unmarshal the ethernet layer to get the source MAC and raw payload
     Physical_Address src_mac;
     unsigned char raw_payload[Ethernet::MTU];
-    int payload_bytes = _nic->unmarshal(buf, &src_mac, 0,
-                                        raw_payload, sizeof(raw_payload));
+    int payload_bytes =
+        _nic->unmarshal(buf, &src_mac, 0, raw_payload, sizeof(raw_payload));
 
     if (payload_bytes < static_cast<int>(sizeof(Header))) {
-        _nic->free(buf);  // always free, even on error path
+        _nic->free(buf); // always free, even on error path
         return -1;
     }
 
@@ -226,7 +229,7 @@ int Protocol<NIC_T>::receive(Buffer * buf, Address * from, void * data,
     unsigned int to_copy = (data_bytes < size) ? data_bytes : size;
     std::memcpy(data, raw_payload + sizeof(Header), to_copy);
 
-    _nic->free(buf);  // always free, ownership ends here
+    _nic->free(buf); // always free, ownership ends here
     return static_cast<int>(to_copy);
 }
 
@@ -247,11 +250,8 @@ void Protocol<NIC_T>::update(const Protocol_Number & prot, Buffer * buf)
 {
     (void)prot;
 
-    
-    const Packet * pkt =
-        reinterpret_cast<const Packet *>(buf->frame()->data);
+    const Packet * pkt = reinterpret_cast<const Packet *>(buf->frame()->data);
 
-    
     if (!_observed.notify(pkt->_to_port, buf))
         _nic->free(buf);
 }

@@ -1,53 +1,54 @@
 #ifndef LIBVCOMM_SEMAPHORE_H
 #define LIBVCOMM_SEMAPHORE_H
 
-// POR QUE ESTE ARQUIVO SE CHAMA sem.h E NÃO semaphore.h:
-//   com -Iinclude, o gcc procura include/ ANTES de /usr/include até para
-//   #include <...>.  Um arquivo nosso chamado semaphore.h faria o
-//   `#include <semaphore.h>` abaixo incluir a si mesmo — o include guard
-//   corta a recursão e sem_t simplesmente não existe.  Erro que custa meia
-//   hora quando se vê pela primeira vez.
+// WHY THIS FILE IS CALLED sem.h AND NOT semaphore.h:
+//   with -Iinclude, gcc searches include/ BEFORE /usr/include even for
+//   #include <...>.  A file of ours named semaphore.h would make the
+//   `#include <semaphore.h>` below include itself — the include guard cuts the
+//   recursion and sem_t simply does not exist.  A mistake that costs half an
+//   hour the first time you see it.
 #include <semaphore.h>
 #include <cerrno>
 
 // =============================================================================
-// Semaphore — apoio.  JÁ IMPLEMENTADO.  Envelope fino sobre sem_t do POSIX.
+// Semaphore — support class.  ALREADY IMPLEMENTED.  Thin wrapper over POSIX
+// sem_t.
 // =============================================================================
 //
-// POR QUE SEMÁFORO E NÃO RENDEZVOUS (resposta de banca):
-//   O enunciado proíbe rendezvous na recepção.  O semáforo desacopla no tempo:
-//   quem produz (o signal handler) faz v() e segue em frente sem esperar
-//   ninguém; quem consome faz p() e dorme até haver dado.  Se a mensagem chegar
-//   ANTES de a aplicação chamar receive(), o contador do semáforo já está em 1
-//   e o p() retorna na hora — nada se perde.  É exatamente essa memória de um
-//   evento passado que um rendezvous não tem.
+// WHY A SEMAPHORE AND NOT A RENDEZVOUS (panel answer):
+//   The assignment forbids a rendezvous on reception.  A semaphore decouples in
+//   time: the producer (the signal handler) does v() and moves on without
+//   waiting for anyone; the consumer does p() and sleeps until data is there.
+//   If the message arrives BEFORE the application calls receive(), the
+//   semaphore's counter is already 1 and p() returns immediately — nothing is
+//   lost.  It is exactly that memory of a past event that a rendezvous lacks.
 //
-// Cuidado clássico: sem_wait() retorna -1/EINTR quando um sinal POSIX chega.
-// Isso NÃO é erro, é para tentar de novo. O laço abaixo trata isso.
+// Classic pitfall: sem_wait() returns -1/EINTR when a POSIX signal arrives.
+// That is NOT an error, it means try again.  The loop below handles it.
 
 class Semaphore
 {
 public:
     explicit Semaphore(int init = 1)
     {
-        sem_init(&_sem, 0 /* threads, não processos */, init);
+        sem_init(&_sem, 0 /* threads, not processes */, init);
     }
     ~Semaphore() { sem_destroy(&_sem); }
 
     Semaphore(const Semaphore &) = delete;
     Semaphore & operator=(const Semaphore &) = delete;
 
-    // p() / down / wait — bloqueia enquanto o contador for zero.
+    // p() / down / wait — blocks while the counter is zero.
     void p()
     {
         while (sem_wait(&_sem) == -1 && errno == EINTR)
             ;
     }
 
-    // v() / up / post — nunca bloqueia.
+    // v() / up / post — never blocks.
     void v() { sem_post(&_sem); }
 
-    // Tenta sem bloquear.  Útil para drenar o que sobrou no encerramento.
+    // Tries without blocking.  Useful to drain leftovers at shutdown.
     bool try_p() { return sem_trywait(&_sem) == 0; }
 
     int value()

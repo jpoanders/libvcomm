@@ -1,14 +1,14 @@
 // =============================================================================
-// Testes da PILHA — os que você vai fazer passar.
+// Tests for the STACK — the ones you are going to make pass.
 //
-// Rode com `make test-stack`.  HOJE ELES FALHAM, e é para falhar mesmo: cada
-// CHECK aqui é um pedaço do contrato que ainda está com TODO.  Implemente na
-// ordem em que os testes aparecem e use o verde como cronômetro.
+// Run with `make test-stack`.  THEY FAIL TODAY, and they are meant to: each
+// CHECK here is a piece of the contract that is still a TODO.  Implement in the
+// order the tests appear and use the green as your stopwatch.
 //
-// Estes testes não abrem raw socket (rodam no host, sem CAP_NET_RAW).  Eles
-// exercitam o que NÃO depende do kernel: Observer, pool de buffers,
-// marshalling. A prova de que os frames andam de verdade é a frota de 5 VMs,
-// não isto aqui.
+// These tests do not open a raw socket (they run on the host, without
+// CAP_NET_RAW).  They exercise what does NOT depend on the kernel: Observer,
+// the buffer pool, marshalling.  The proof that frames really travel is the
+// five-VM fleet, not this.
 // =============================================================================
 
 #include "check.h"
@@ -16,7 +16,7 @@
 
 namespace {
 
-// Observador de mentira, para testar o Observed sem subir a pilha inteira.
+// A fake observer, to test Observed without bringing up the whole stack.
 class Spy : public Conditional_Data_Observer<int, int>
 {
 public:
@@ -37,11 +37,11 @@ public:
 
 int main()
 {
-    std::printf("== pilha (esperado falhar até a implementação) ==\n");
+    std::printf("== stack ==\n");
 
     // -------------------------------------------------------------------------
     // 1. Conditionally_Data_Observed — attach / notify / detach.
-    //    Comece por aqui: é o destravador de NIC e Protocol.
+    //    Start here: it is what unblocks NIC and Protocol.
     // -------------------------------------------------------------------------
     {
         Conditionally_Data_Observed<int, int> observed;
@@ -53,19 +53,19 @@ int main()
 
         CHECK(observed.notify(10, &payload) == true);
         CHECK(s1.calls == 1);
-        CHECK(s2.calls == 0); // condição diferente: NÃO é notificado
+        CHECK(s2.calls == 0); // different condition: NOT notified
         CHECK(s1.last == 42);
 
-        CHECK(observed.notify(99, &payload) == false); // ninguém escuta 99
+        CHECK(observed.notify(99, &payload) == false); // nobody listens to 99
         observed.detach(&s1, 10);
         CHECK(observed.notify(10, &payload) ==
-              false); // depois do detach, silêncio
+              false); // after the detach, silence
         CHECK(s1.calls == 1);
     }
 
     // -------------------------------------------------------------------------
-    // 2. Concurrent_Observed — já implementado (transcrito do PDF).
-    //    Deve passar HOJE.  Se falhar, a regressão é sua.
+    // 2. Concurrent_Observed — already implemented (transcribed from the PDF).
+    //    Must pass TODAY.  If it fails, the regression is yours.
     // -------------------------------------------------------------------------
     {
         Concurrent_Observed<int, int> observed;
@@ -75,12 +75,13 @@ int main()
         observed.attach(&obs, 5);
         CHECK(obs.rank() == 5);
         CHECK(observed.notify(5, &payload) == true);
-        CHECK(obs.updated() == &payload); // não bloqueia: o v() já aconteceu
+        CHECK(obs.updated() == &payload); // does not block: the v() already
+                                          // happened
         CHECK(observed.notify(6, &payload) == false);
     }
 
     // -------------------------------------------------------------------------
-    // 3. NIC — pool de buffers.  Não precisa de socket para testar.
+    // 3. NIC — buffer pool.  No socket needed to test it.
     // -------------------------------------------------------------------------
     {
         Vehicle_NIC nic;
@@ -95,8 +96,8 @@ int main()
             nic.free(first);
         }
 
-        // Exaustão: o pool tem BUFFER_SIZE posições e nem uma a mais.  Quando
-        // acabar, alloc() devolve 0 — e devolver 0 é comportamento correto.
+        // Exhaustion: the pool has BUFFER_SIZE slots and not one more.  When it
+        // runs out, alloc() returns 0 — and returning 0 is correct behaviour.
         Vehicle_NIC::Buffer * all[Vehicle_NIC::BUFFER_SIZE];
         unsigned int got = 0;
         for (unsigned int i = 0; i < Vehicle_NIC::BUFFER_SIZE; i++) {
@@ -112,8 +113,9 @@ int main()
         for (unsigned int i = 0; i < got; i++)
             nic.free(all[i]);
 
-        // Depois de devolver tudo, o pool volta ao começo.  Este CHECK é o que
-        // pega vazamento de buffer — o bug que só aparece na demo.
+        // After giving everything back, the pool returns to the start.  This
+        // CHECK is what catches a buffer leak — the bug that only shows up in
+        // the demo.
         Vehicle_NIC::Buffer * again = nic.alloc(
             Ethernet::BROADCAST, Traits<Ethernet>::PROTOCOL_NUMBER, 8);
         CHECK(again != 0);
@@ -121,7 +123,7 @@ int main()
     }
 
     // -------------------------------------------------------------------------
-    // 4. Marshalling — roundtrip via alloc() + unmarshal().
+    // 4. Marshalling — roundtrip through alloc() + unmarshal().
     // -------------------------------------------------------------------------
     {
         Vehicle_NIC nic;
@@ -151,5 +153,5 @@ int main()
         }
     }
 
-    return ::test::summary("pilha");
+    return ::test::summary("stack");
 }

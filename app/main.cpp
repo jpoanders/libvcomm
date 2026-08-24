@@ -1,13 +1,13 @@
 // =============================================================================
-// Aplicação de teste da Etapa 1.
+// Stage 1 test application.
 //
-// O /init do starter roda /student/app e exporta SO2_VM_ID.  Um binário só é
-// instalado em todas as VMs; o PAPEL vem do ID.  É por isso que este main tem
-// um switch: uma imagem, cinco veículos, comportamentos diferentes.
+// The starter's /init runs /student/app and exports SO2_VM_ID.  A single binary
+// is installed on every VM; the ROLE comes from the ID.  That is why this main
+// has a switch: one image, five vehicles, different behaviours.
 //
-// O enunciado exige que cada COMPONENTE de um veículo (sensor, fusor, ECU,
-// powertrain) seja um PROCESSO POSIX.  Uma VM = um veículo = vários processos.
-// Este main é o processo raiz do veículo; os componentes nascem de fork().
+// The assignment requires each vehicle COMPONENT (sensor, fuser, ECU,
+// powertrain) to be a POSIX PROCESS.  One VM = one vehicle = several processes.
+// This main is the vehicle's root process; the components are born from fork().
 // =============================================================================
 
 #include <cstdlib>
@@ -19,9 +19,9 @@
 
 namespace {
 
-// O veículo 1 emite; 2..5 recebem e provam a recepção.  É o mínimo que fecha o
-// item "quatro receptores provam a recepção do broadcast de um emissor" da
-// seção 9 do guia.
+// Vehicle 1 transmits; 2..5 receive and prove reception.  It is the minimum
+// that satisfies the "four receivers prove reception of one sender's broadcast"
+// item in section 9 of the guide.
 enum Role
 {
     ROLE_SENDER,
@@ -43,13 +43,13 @@ int vm_id_from_env()
 void run_sender(Vehicle_Communicator & comm, int vm_id)
 {
     // TODO(joao):
-    //   - montar uma Message identificável (id do veículo + número de
-    //   sequência)
-    //   - N mensagens, com as primeiras marcadas como warm-up e EXCLUÍDAS da
-    //     estatística (o guia pede isso explicitamente)
-    //   - imprimir uma linha por envio, em formato fácil de casar no log:
+    //   - build an identifiable Message (vehicle id + sequence number)
+    //   - N messages, with the first few marked as warm-up and EXCLUDED from
+    //     the statistics (the guide asks for this explicitly)
+    //   - print one line per send, in a format that is easy to match in the
+    //     log:
     //         TX vm=1 seq=7 bytes=32
-    //   - silêncio no console durante o intervalo medido; log depois
+    //   - silence on the console during the measured interval; log afterwards
     (void)comm;
     (void)vm_id;
 }
@@ -57,12 +57,12 @@ void run_sender(Vehicle_Communicator & comm, int vm_id)
 void run_receiver(Vehicle_Communicator & comm, int vm_id)
 {
     // TODO(joao):
-    //   - laço de receive() com condição de parada (contador ou tempo)
-    //   - imprimir  RX vm=3 from=... seq=7 bytes=32
-    //   - ao final, imprimir um veredito que o script de teste possa conferir:
+    //   - a receive() loop with a stop condition (a counter or a deadline)
+    //   - print  RX vm=3 from=... seq=7 bytes=32
+    //   - at the end, print a verdict the test script can check:
     //         RESULT vm=3 received=20 expected=20 OK
-    //     O `make` tem que FALHAR quando um receptor perde frame; um teste que
-    //     só imprime aviso não é avaliável.
+    //     `make` MUST FAIL when a receiver loses a frame; a test that only
+    //     prints a warning is not gradeable.
     (void)comm;
     (void)vm_id;
 }
@@ -72,33 +72,34 @@ void run_receiver(Vehicle_Communicator & comm, int vm_id)
 int main()
 {
     const int vm_id = vm_id_from_env();
-    std::printf("[vm %d] libvcomm — Etapa 1\n", vm_id);
+    std::printf("[vm %d] libvcomm — Stage 1\n", vm_id);
 
     // -------------------------------------------------------------------------
-    // Monta a pilha.  Repare na direção das dependências: cada camada recebe a
-    // de baixo pronta e nunca a constrói sozinha.  Isso é o que torna possível
-    // testar Protocol com uma NIC falsa mais tarde.
+    // Build the stack.  Note the direction of the dependencies: each layer
+    // receives the one below it already built and never constructs it itself.
+    // That is what makes it possible to test Protocol with a fake NIC later.
     // -------------------------------------------------------------------------
     Vehicle_NIC nic;
 
-    // TODO(joao): abortar com mensagem clara se a NIC não subiu (raw socket
-    // exige CAP_NET_RAW; dentro da VM você é root, no host não).
+    // TODO(joao): abort with a clear message if the NIC did not come up (a raw
+    // socket requires CAP_NET_RAW; inside the VM you are root, on the host you
+    // are not).
 
     Vehicle_Protocol protocol(&nic);
 
-    // A porta identifica o COMPONENTE dentro do veículo.  Aqui vai uma fixa só
-    // para a pilha subir; quando você forkar os componentes, cada um recebe a
-    // sua.
+    // The port identifies the COMPONENT within the vehicle.  A fixed one goes
+    // here just to bring the stack up; when you fork the components, each gets
+    // its own.
     const Vehicle_Protocol::Port port = 1000;
     Vehicle_Communicator comm(&protocol,
                               Vehicle_Protocol::Address(nic.address(), port));
 
-    // TODO(joao): fork() dos componentes do veículo.  Pergunta de projeto que
-    // vale decidir ANTES de escrever: cada processo filho abre o PRÓPRIO raw
-    // socket (simples, mas N sockets por VM e cada um recebe cópia de tudo), ou
-    // um processo dono da NIC repassa aos filhos (é para onde a Etapa 2 vai,
-    // com memória compartilhada)?  A resposta muda a arquitetura — anote em
-    // doc/.
+    // TODO(joao): fork() the vehicle's components.  A design question worth
+    // deciding BEFORE writing any code: does each child process open its OWN
+    // raw socket (simple, but N sockets per VM and each one receives a copy of
+    // everything), or does a single NIC-owning process relay to the children
+    // (which is where Stage 2 is heading, with shared memory)?  The answer
+    // changes the architecture — record it in doc/.
 
     if (role_of(vm_id) == ROLE_SENDER)
         run_sender(comm, vm_id);

@@ -1,34 +1,34 @@
 # libvcomm
 
-Biblioteca de comunicação para sistemas autônomos críticos.
-INE5424 — Sistemas Operacionais II — UFSC — 2026/2 — **Grupo M10** — Etapa 1.
+Communication library for critical autonomous systems.
+INE5424 — Operating Systems II — UFSC — 2026/2 — **Group M10** — Stage 1.
 
-Cada veículo é uma VM QEMU; cada componente do veículo é um processo POSIX. As
-VMs conversam por **frames Ethernet crus**, em broadcast, sem IP.
+Each vehicle is a QEMU VM; each vehicle component is a POSIX process. The VMs
+talk to one another over **raw Ethernet frames**, broadcast, without IP.
 
 ---
 
-## O caminho de uma mensagem
+## The path of a message
 
-Saber recitar isto é metade da apresentação:
+Being able to recite this is half the presentation:
 
 ```
-  aplicação                     Communicator::send(Message*)
+  application                   Communicator::send(Message*)
       |                                   |
-      v                         Protocol::send()  -> monta o Header do protocolo
+      v                         Protocol::send()  -> builds the protocol Header
   Communicator                            |
-      |                         NIC::alloc() -> pega buffer do pool, monta o
-      v                                        cabeçalho Ethernet (dst=broadcast)
-   Protocol                                |
+      |                         NIC::alloc() -> takes a buffer from the pool,
+      v                                        builds the Ethernet header
+   Protocol                                    (dst=broadcast)
       |                         NIC::send(buf)
       v                                   |
-     NIC                       Engine::engine_send() -> sendto()  <<< ÚNICA syscall
+     NIC                       Engine::engine_send() -> sendto()  <<< THE ONLY syscall
       |                                   |
-      v                          [ barramento multicast do QEMU ]
+      v                          [ QEMU's multicast bus ]
    Engine                                 |
       |                      [SIGIO] Engine::drain() -> recvfrom()
       v                                   |
-  raw socket                     NIC::handle()  -> copia para um buffer
+  raw socket                     NIC::handle()  -> copies into a buffer
                                           |
                               Observed::notify(EtherType, buf)
                                           |
@@ -36,91 +36,148 @@ Saber recitar isto é metade da apresentação:
                                           |
                               Observed::notify(Port, buf)
                                           |
-                              Communicator::update() -> semáforo.v()
+                              Communicator::update() -> semaphore.v()
                                           |
-                    ~~~ aqui o SIGNAL HANDLER termina e a thread interrompida ~~~
-                    ~~~ volta a fazer o que fazia                            ~~~
+                    ~~~ the SIGNAL HANDLER ends here and the interrupted   ~~~
+                    ~~~ thread goes back to what it was doing              ~~~
                                           |
-                    thread da aplicação acorda em Communicator::receive()
+                    the application thread wakes up in Communicator::receive()
 ```
 
-Nenhuma camada acima da `Engine` conhece socket. É essa promessa que faz a
-Etapa 2 (memória compartilhada) trocar só a `Engine`.
+No layer above the `Engine` knows about sockets. It is that promise that lets
+Stage 2 (shared memory) swap only the `Engine`.
 
-**Tudo entre `drain()` e `semáforo.v()` roda dentro de um signal handler** — o
-enunciado exige propagação por sinais POSIX, e no EPOS esse mesmo trecho roda no
-handler de interrupção da NIC. Consequência prática que morde na primeira hora:
-nada de `printf`, `new` ou `std::mutex` nesse caminho. Ver `doc/decisoes.md` §2.1
-e `man 7 signal-safety`.
+**Everything between `drain()` and `semaphore.v()` runs inside a signal
+handler** — the assignment requires propagation through POSIX signals, and in
+EPOS that same stretch runs in the NIC's interrupt handler. The practical
+consequence bites within the first hour: no `printf`, no `new` and no
+`std::mutex` on that path. See `doc/design-decisions.md` §2.1 and
+`man 7 signal-safety`.
 
 ---
 
-## Mapa dos arquivos
+## Map of the files
 
-| Arquivo | Estado | O que é |
+| File | State | What it is |
 |---|---|---|
-| `include/traits.h` | pronto | EtherType, interface, tamanho do pool — configuração |
-| `include/ethernet.h` | pronto | `Address`, `Header`, `Frame`, MTU, `Statistics` |
-| `include/list.h` | pronto | `List` (FIFO) e `Ordered_List` (observadores) |
-| `include/sem.h` | pronto | `Semaphore` sobre `sem_t` |
-| `include/buffer.h` | pronto | `Buffer<T>` e a regra de posse |
-| `include/message.h` | pronto | `Message` da Etapa 1 (array de bytes) |
-| `include/observer.h` | **misto** | `Concurrent_*` transcritos do PDF; `Conditionally_Data_Observed` é seu |
-| `include/engine/raw_socket_engine.h` + `src/raw_socket_engine.cpp` | **seu** | as syscalls. O coração da Etapa 1 |
-| `include/nic.h` | **seu** | pool de buffers, marshalling, notificação |
-| `include/protocol.h` | **seu** | portas, cabeçalho do protocolo, a dobra do Observer |
-| `include/communicator.h` | **seu** | a API que a aplicação enxerga |
-| `app/main.cpp` | **seu** | papel por `SO2_VM_ID`, fork dos componentes |
-| `scripts/*.sh` | **seu** | frota, captura, estatística |
-| `doc/decisoes.md` | pronto | desvios em relação ao PDF, com justificativa — material de banca |
-
-`src/channel.cpp` é seu rascunho de raw socket. Fica fora do build de propósito.
-
----
-
-## Ordem de implementação
-
-Está em **[`ROADMAP.md`](ROADMAP.md)** — 8 fases, cada uma com o que implementar, como
-verificar que acabou, quanto tempo estimar e qual armadilha ela esconde. Lá também estão
-o plano de fim de semana e o corte de emergência, caso a apresentação seja antecipada.
-
-Resumo de uma linha: **comece pelo `Conditionally_Data_Observed::notify`** em
-`include/observer.h`. É a fase mais barata e destrava `NIC` e `Protocol` de uma vez.
+| `include/traits.h` | done | EtherType, interface, pool size — configuration |
+| `include/ethernet.h` | done | `Address`, `Header`, `Frame`, MTU, `Statistics` |
+| `include/list.h` | done | `List` (FIFO) and `Ordered_List` (observers) |
+| `include/sem.h` | done | `Semaphore` over `sem_t` |
+| `include/buffer.h` | done | `Buffer<T>` and the ownership rule |
+| `include/message.h` | done | Stage 1's `Message` (array of bytes) |
+| `include/observer.h` | **mixed** | `Concurrent_*` transcribed from the PDF; `Conditionally_Data_Observed` is yours |
+| `include/engine/raw_socket_engine.h` + `src/raw_socket_engine.cpp` | **yours** | the syscalls. The heart of Stage 1 |
+| `include/nic.h` | **yours** | buffer pool, marshalling, notification |
+| `include/protocol.h` | **yours** | ports, protocol header, the Observer fold |
+| `include/communicator.h` | **yours** | the API the application sees |
+| `app/main.cpp` | **yours** | role from `SO2_VM_ID`, forking the components |
+| `scripts/*.sh` | **yours** | fleet, capture, statistics |
+| `tests/*` | done | `test-support`, `test-stack` and `test-engine` |
+| `doc/` | done | the assignment, the practical guide and the design decisions |
+| `vendor/` | done | the instructor's starter, versioned — see `vendor/README.md` |
 
 ---
 
-## Comandos
+## The documents
+
+| File | What it is |
+|---|---|
+| [`doc/full_assignment.pdf`](doc/full_assignment.pdf) | the course's project proposal — the global requirements and the four stages |
+| [`doc/practical_class_1_guide.md`](doc/practical_class_1_guide.md) | the Practical Class 1 guide: the bench, QEMU, tshark, and the **Stage 1 acceptance checklist in section 9** |
+| [`doc/design-decisions.md`](doc/design-decisions.md) | the deviations from the assignment's API and our own decisions, with justification — this is what the panel reads |
+| [`ROADMAP.md`](ROADMAP.md) | working document: implementation order, estimates, emergency cuts |
+| [`vendor/README.md`](vendor/README.md) | the starter's provenance and why it is versioned |
+
+---
+
+## The repository is self-contained
+
+Nothing here points outside the root. The instructor's starter (kernel,
+initramfs, `run-vm.sh`) is versioned in `vendor/` as a tarball, and the
+assignment and the practical guide are in `doc/`. A clean clone, on any machine,
+runs the whole `make` without you having to have taken the course under the same
+`$HOME`.
 
 ```bash
-make app            # binário estático x86-64 para dentro da VM
-make test-support   # classes de apoio — tem que passar hoje
-make test-stack     # a pilha — falha até você implementar
-make help           # o resto
+make doctor    # what is missing on the machine, before you find out mid-fleet
+make starter   # checks the tarball's sha256 and unpacks into build/vm/
 ```
 
-Variáveis que valem conhecer:
+`build/vm/` is a **working copy**: that is where `install-app.sh` runs, because
+`repack-initramfs.sh` writes into the tree it lives in. The tarball is never
+touched, and `make clean-vm` restores the image to factory state. The unpacked
+copy matches byte for byte against the `SHA256SUMS` that came in the bundle.
+
+Tools the bench requires: `g++` (C++17), `make`, `file`, `qemu-system-x86_64`,
+`cpio`, `timeout`, `dumpcap`/`tshark`, and `setcap` for `test-engine`'s level 1.
+`make doctor` checks all of them and also warns about two things that bite: a
+missing `/dev/kvm` (QEMU falls back to TCG and the latency picks up an emulation
+bias) and which interface the multicast bus is going out through.
+
+---
+
+## Implementation order
+
+It is in **[`ROADMAP.md`](ROADMAP.md)** — 8 phases, each with what to implement,
+how to know it is finished, how long to estimate, and which trap it hides. The
+weekend plan and the emergency cuts are there too, in case the presentation is
+brought forward.
+
+Phases 1 through 4 are done — Observer, buffer pool, Engine and marshalling;
+`test-stack` and `test-engine` prove all four. **Next is Phase 5**, `Protocol` +
+`Communicator`, and it is the one that closes the demo path: five VMs, one
+transmitting and four proving reception.
+
+---
+
+## Commands
 
 ```bash
-STARTER=~/work/so2/pratical-class-1/INE5424-x86_64-starter-6.15.5   # material do professor (READ-ONLY)
-SO2_MCAST=239.10.10.10:15424                                        # o barramento do grupo
-VM_TIMEOUT=20                                                       # teto por VM no teste
+make doctor         # check the bench tools
+make app            # static x86-64 binary for inside the VM
+make test-support   # support classes — must pass today
+make test-stack     # the stack — green since 2026-08-24 (Observer, pool, marshalling)
+make test-engine    # the Engine; level 1 needs CAP_NET_RAW
+make help           # the rest
+```
+
+`test-engine`'s level 1 opens a real `AF_PACKET` socket over `lo`. Without
+privileges it skips itself; to exercise it:
+
+```bash
+sudo setcap cap_net_raw+ep build/test-engine    # dies on every relink — redo it
+sudo scripts/test-engine-veth.sh                # proves drain()'s error arm
+```
+
+Inside `make check`, `VCOMM_REQUIRE_RAW=1` turns that skip into a failure: the
+evaluation target must not go green having skipped the only test that opens a
+socket.
+
+Variables worth knowing:
+
+```bash
+SO2_MCAST=239.10.10.10:15424   # the group's bus
+VM_TIMEOUT=20                  # per-VM ceiling in the test
+WORKVM=build/vm                # the image's working copy
 ```
 
 ---
 
-## Antes de apresentar
+## Before presenting
 
-O checklist de aceitação está na seção 9 de `practical_class_1_guide.md`. Os
-itens que mais dão trabalho e menos aparecem no código:
+The acceptance checklist is in section 9 of
+`doc/practical_class_1_guide.md`. The items that take the most work and show up
+least in the code:
 
-- `make` na raiz tem que **falhar** quando um receptor perde frame, quando uma
-  VM estoura o timeout ou quando a captura sai vazia. Teste que só imprime aviso
-  não é avaliável.
-- a latência precisa sair **automaticamente** ao final do `make`, com o rótulo
-  certo (round-trip ou via única — não troque um pelo outro).
-- diagramas e slides em `doc/`.
-- o commit avaliado tem que estar na `main`.
+- `make` at the root has to **fail** when a receiver loses a frame, when a VM
+  blows the timeout, or when the capture comes back empty. A test that only
+  prints a warning is not gradeable.
+- the latency has to be printed **automatically** at the end of `make`, with the
+  right label (round-trip or one-way — do not swap one for the other).
+- diagrams and slides in `doc/`.
+- the graded commit has to be on `main`.
 
-Ressalvas honestas da bancada (sem `/dev/kvm`, `virtio-net` sem padding, captura
-não prova recepção) estão em `doc/decisoes.md` §3. Dizer isso na apresentação é
-mais forte do que esconder.
+The bench's honest caveats (no `/dev/kvm`, `virtio-net` without padding, a
+capture does not prove reception) are in `doc/design-decisions.md` §3. Saying so
+in the presentation is stronger than hiding it.

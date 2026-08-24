@@ -1,5 +1,6 @@
 #!/bin/bash
-# Sobe as 5 VMs (5 veículos) no mesmo barramento multicast e coleta os logs.
+# Brings up the 5 VMs (5 vehicles) on the same multicast bus and collects the
+# logs.
 set -euo pipefail
 
 WORKVM="${WORKVM:-build/vm}"
@@ -10,22 +11,23 @@ export SO2_MCAST="${SO2_MCAST:-239.10.10.10:15424}"
 
 # TODO(joao):
 #
-#   Para cada ID em $VMS, em PARALELO (& no fim, guardar os PIDs):
+#   For each ID in $VMS, in PARALLEL (& at the end, keeping the PIDs):
 #
 #       timeout --signal=INT "$VM_TIMEOUT" "$WORKVM/run-vm.sh" "$ID" \
 #           < /dev/null > "$LOGS/vm-$ID.log" 2>&1 &
 #
-#   Três detalhes que você já verificou na bancada e que fazem isso funcionar:
-#     - `< /dev/null` é obrigatório: o run-vm.sh usa -nographic e a VM disputa o
-#       terminal com as outras se tiver stdin.
-#     - `timeout --signal=INT` é o que garante que a frota termina sozinha,
-#       mesmo se um receptor ficar bloqueado — sem isso o make pendura.
-#     - boot em TCG (sem /dev/kvm) leva 3–5 s.  O emissor precisa esperar os
-#       receptores subirem, senão manda no vazio.  Decida COMO: sleep fixo é
-#       frágil; um "READY" no log ou uma rodada de warm-up é honesto.
+#   Three details you have already verified on the bench that make this work:
+#     - `< /dev/null` is mandatory: run-vm.sh uses -nographic and the VM fights
+#       the other ones for the terminal if it has a stdin.
+#     - `timeout --signal=INT` is what guarantees the fleet terminates on its
+#       own, even if a receiver stays blocked — without it, make hangs.
+#     - booting under TCG (no /dev/kvm) takes 3-5 s.  The sender has to wait for
+#       the receivers to come up, otherwise it transmits into the void.  Decide
+#       HOW: a fixed sleep is fragile; a "READY" line in the log or a warm-up
+#       round is honest.
 #
-#   Depois: wait nos PIDs, e conferir o veredito de CADA log:
+#   Afterwards: wait on the PIDs, and check EACH log's verdict:
 #       grep -q 'RESULT .* OK' "$LOGS/vm-$ID.log" || exit 1
-#   O make TEM que falhar se um receptor perdeu frame.
-echo "TODO: implementar run-fleet.sh"
+#   make MUST fail if a receiver lost a frame.
+echo "TODO: implement run-fleet.sh"
 exit 1

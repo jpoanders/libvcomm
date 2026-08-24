@@ -1,22 +1,26 @@
 #!/bin/bash
-# Injeta build/student-app no initramfs e deixa a imagem pronta para a frota.
+# Injects build/student-app into the initramfs and leaves the image ready for
+# the fleet.
 #
-# REGRA QUE NÃO SE QUEBRA: o starter em ~/work/so2/ é material do professor e é
-# READ-ONLY.  O repack-initramfs.sh escreve dentro da árvore onde ele está, então
-# rodá-lo direto no starter suja o material original.  Trabalhe numa cópia.
+# The working copy comes ready: `make starter` checks the sha256 of the tarball
+# in vendor/ and unpacks it into build/vm/.  repack-initramfs.sh writes into the
+# tree it lives in, which is why it runs in build/vm/ and never in vendor/ — if
+# the image gets dirty, `make clean-vm` restores it to factory state.
 set -euo pipefail
 
-STARTER="${STARTER:-$HOME/work/so2/pratical-class-1/INE5424-x86_64-starter-6.15.5}"
 WORKVM="${WORKVM:-build/vm}"
 APP="${1:-build/student-app}"
 
 # TODO(joao):
-#   1. se $WORKVM não existir, copiar $STARTER para lá (cp -a) e avisar
-#   2. validar que $APP existe, é x86-64 e é estático
+#   1. validate that $WORKVM/install-app.sh exists; if not, tell the user to run
+#        make starter
+#      (do not copy anything from outside the repository — there is nothing
+#      outside it)
+#   2. validate that $APP exists, is x86-64 and is static
 #        file "$APP" | grep -q 'statically linked'
 #   3. "$WORKVM/install-app.sh" "$(readlink -f "$APP")"
-#        (ele já chama repack-initramfs.sh por dentro)
-#   4. falhar com mensagem clara em qualquer erro — este script roda dentro do
-#      make e o make PRECISA falhar quando algo dá errado
-echo "TODO: implementar install-initramfs.sh"
+#        (it already calls repack-initramfs.sh internally)
+#   4. fail with a clear message on any error — this script runs inside make and
+#      make MUST fail when something goes wrong
+echo "TODO: implement install-initramfs.sh"
 exit 1

@@ -1,8 +1,10 @@
-build/student-app
-build/test-support
-build/test-stack
-build/logs/
-build/captures/
-build/vm/
+# Everything make produces.  build/vm/ is the unpacked working copy of vendor/ —
+# derived, never source.
+build/
+
 *.o
 *.pcapng
+
+# vendor/*.tar.gz IS versioned on purpose: it is what lets a clean clone run the
+# whole make without depending on anything outside the root.  See
+# vendor/README.md.

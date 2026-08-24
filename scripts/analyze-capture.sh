@@ -1,5 +1,5 @@
 #!/bin/bash
-# Extrai os pares request/response da captura e calcula a latência.
+# Extracts the request/response pairs from the capture and computes the latency.
 set -euo pipefail
 
 CAPTURES="${CAPTURES:-build/captures}"
@@ -7,22 +7,24 @@ PCAP="${1:-$CAPTURES/fleet.pcapng}"
 
 # TODO(joao):
 #
-#   1. extrair com tshark: tempo + os bytes que distinguem request, response e
-#      número de sequência.  Algo como:
+#   1. extract with tshark: the timestamp plus the bytes that distinguish
+#      request, response and sequence number.  Something like:
 #        tshark -r "$PCAP" -T fields -e frame.time_epoch -e data.data
-#      e recortar os campos por offset — o payload UDP contém o frame Ethernet
-#      inteiro, então o seu cabeçalho começa depois dele.
+#      and slice the fields by offset — the UDP payload contains the whole
+#      Ethernet frame, so your header starts after it.
 #
-#   2. parear por número de sequência, descartar as amostras de warm-up.
+#   2. pair by sequence number, discard the warm-up samples.
 #
-#   3. calcular count, mean, min, max e um percentil (p95 ou p99).
+#   3. compute count, mean, min, max and a percentile (p95 or p99).
 #
-#   4. IMPRIMIR O RÓTULO CERTO.  Se você mediu request→response, é round-trip.
-#      Chamar isso de "latência de via única" sem dividir e sem justificar é
-#      exatamente o tipo de coisa que o Fröhlich pergunta na banca.
+#   4. PRINT THE RIGHT LABEL.  If you measured request->response, it is
+#      round-trip.  Calling that "one-way latency" without dividing and without
+#      justifying it is exactly the kind of thing Fröhlich asks about at the
+#      panel.
 #
-#   5. Dizer, junto do número, que a bancada roda em QEMU TCG (esta máquina não
-#      tem /dev/kvm).  O valor é dominado por ruído de emulação.  Reportar isso
-#      é mais forte do que reportar um número bonito sem contexto.
-echo "TODO: implementar analyze-capture.sh"
+#   5. State, alongside the number, that the bench runs QEMU in TCG (this
+#      machine has no /dev/kvm).  The value is dominated by emulation noise.
+#      Reporting that is stronger than reporting a pretty number with no
+#      context.
+echo "TODO: implement analyze-capture.sh"
 exit 1
