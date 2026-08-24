@@ -67,51 +67,42 @@ template <typename Channel>
 Communicator<Channel>::Communicator(Channel * channel, Address address)
     : _channel(channel), _address(address)
 {
-    // TODO(joao): _channel->attach(this, _address);
+    _channel->attach(this, _address);
 }
 
 template <typename Channel> Communicator<Channel>::~Communicator()
 {
-    // TODO(joao): _channel->detach(this, _address);
-    // O PDF escreve `Channel::detach(this, _address)` — chamada estática num
-    // método de instância.  Use a forma de instância; anote o desvio.
+    _channel->detach(this, _address);
 }
 
 template <typename Channel>
 bool Communicator<Channel>::send(const Message * message)
 {
-    // TODO(joao):
-    //     return _channel->send(_address,
-    //                           Address::broadcast(),
-    //                           message->data(),
-    //                           message->size()) > 0;
-    (void)message;
-    return false;
+    return _channel->send(_address,
+                          Address::broadcast(),
+                          message->data(),
+                          message->size()) > 0;
 }
 
 template <typename Channel>
 bool Communicator<Channel>::receive(Message * message)
 {
-    // TODO(joao): as quatro linhas mais importantes da biblioteca.
-    //
-    //     Buffer * buf = Observer::updated();   // <<< dorme aqui até chegar
-    //     algo Address from; int size = _channel->receive(buf, &from,
-    //     message->data(), Message::MAX_SIZE); if(size > 0) {
-    //     message->size(size); return true; } return false;
-    //
-    // ARMADILHA: o PDF passa `message->size()` como capacidade.  Numa mensagem
-    // recém-construída isso é 0 e você recebe zero bytes para sempre, sem erro
-    // nenhum.  Passe a CAPACIDADE na entrada e escreva o tamanho recebido na
-    // saída — não use o mesmo campo para as duas coisas.
-    //
-    // ARMADILHA 2: updated() pode devolver 0 se você acordar o semáforo no
-    // encerramento para destravar a aplicação.  Trate isso ou o teste
-    // automatizado vai morrer com segfault no shutdown.
-    //
-    // ARMADILHA 3, nova com o modelo de sinal: sem_wait() dentro de p() volta
-    // com EINTR toda vez que um frame chega enquanto você espera.  O sem.h já
-    // trata isso no laço; se você escrever um p() próprio, não esqueça.
-    (void)message;
+    
+
+    Buffer * buf = Observer::updated();  // <<< blocks here (semaphore p())
+
+    if (!buf)
+        return false;
+
+    Address from;
+    unsigned char tmp[Message::MAX_SIZE];
+    int size = _channel->receive(buf, &from, tmp, Message::MAX_SIZE);
+    // buf is freed by _channel->receive() do not touch buf after this
+
+    if (size > 0) {
+        message->set(tmp, static_cast<unsigned int>(size));
+        return true;
+    }
     return false;
 }
 
@@ -119,12 +110,7 @@ template <typename Channel>
 void Communicator<Channel>::update(
     const typename Channel::Observer::Observing_Condition & c, Buffer * buf)
 {
-    // TODO(joao): Observer::update(c, buf);
-    // Uma linha: enfileira e faz v().  É ela que libera a thread parada em
-    // receive().  Nada de processar a mensagem aqui — você está DENTRO DE UM
-    // SIGNAL HANDLER, com a thread interrompida parada esperando você sair.
-    (void)c;
-    (void)buf;
+    Observer::update(c, buf);
 }
 
 #endif // LIBVCOMM_COMMUNICATOR_H
