@@ -262,6 +262,28 @@ porta = número da disciplina).
 > Prender à loopback com `sudo ip route add 239.10.10.0/24 dev lo` antes de
 > qualquer medição, e reconferir a rota depois de trocar de rede.
 
+### 2.5 `Protocol::receive()` usa `Header::_length` para o tamanho do payload
+
+O `virtio-net` do QEMU não faz padding para 60 bytes (decisão 3, limitações).
+Calcular o tamanho como `bytes_recebidos - 14 - sizeof(Header)` funciona nesta
+bancada, mas quebraria em hardware real e na Engine de memória compartilhada da
+Etapa 2.
+
+**Decisão:** o campo `Protocol::Header::_length` carrega o tamanho verdadeiro do
+payload da aplicação. `Protocol::receive()` lê esse campo em vez de derivar o
+tamanho do frame. Isso torna o protocolo portável entre Engines sem nenhuma
+mudança.
+
+### 2.6 `Communicator::receive()` usa `Message::MAX_SIZE`, não `message->size()`
+
+O PDF passa `message->size()` como capacidade para `Protocol::receive()`. Numa
+`Message` recém-construída, `size()` é **0**, e o receive copia zero bytes para
+sempre, sem erro. O bug é silencioso e não aparece até a demo.
+
+**Decisão:** a capacidade passada é `Message::MAX_SIZE` (constante = 1024). O
+tamanho recebido é escrito de volta via `message->set()`, que atualiza `_size`
+internamente. Entrada = capacidade, saída = tamanho real, campos diferentes.
+
 ---
 
 ## 3. Limitações honestas da bancada
@@ -297,3 +319,4 @@ porta = número da disciplina).
       primeira opção é a que sai de graça.)
 - [ ] Decidir e registrar a política de fila cheia: hoje `Concurrent_Observer::
       update()` ignora o `bool` de `insert()`, ou seja, descarta em silêncio.
+
