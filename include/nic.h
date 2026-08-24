@@ -128,13 +128,11 @@ template <typename Engine>
 int NIC<Engine>::send(Address dst, Protocol_Number prot, const void * data,
                       unsigned int size)
 {
-    // TODO(joao): alloc() -> memcpy do payload -> send(buf).
-    // Repare que este método não deve conhecer sockaddr_ll: ele chama a Engine.
-    (void)dst;
-    (void)prot;
-    (void)data;
-    (void)size;
-    return -1;
+    Buffer * buf = alloc(dst, prot, size);
+    if (!buf)
+        return -1;
+    std::memcpy(buf->frame()->data, data, size);
+    return send(buf);
 }
 
 template <typename Engine>
@@ -171,10 +169,13 @@ NIC<Engine>::alloc(Address dst, Protocol_Number prot, unsigned int size)
 
 template <typename Engine> int NIC<Engine>::send(Buffer * buf)
 {
-    // TODO(joao): Engine::engine_send(buf->frame(), buf->size()),
-    //             atualizar _statistics, free(buf), devolver o resultado.
-    (void)buf;
-    return -1;
+    int ret = Engine::engine_send(buf->frame(), buf->size());
+    if (ret > 0) {
+        _statistics.tx_packets++;
+        _statistics.tx_bytes += ret;
+    }
+    free(buf);
+    return ret;
 }
 
 template <typename Engine> void NIC<Engine>::free(Buffer * buf)
@@ -187,15 +188,14 @@ template <typename Engine>
 int NIC<Engine>::unmarshal(Buffer * buf, Address * src, Address * dst,
                            void * data, unsigned int size)
 {
-    // TODO(joao): ler o cabeçalho do buf->frame(), copiar até `size` bytes de
-    // payload e devolver quantos.  Não liberar o buffer aqui — quem libera é
-    // quem chamou (ver a nota de posse em buffer.h).
-    (void)buf;
-    (void)src;
-    (void)dst;
-    (void)data;
-    (void)size;
-    return -1;
+    const Ethernet::Frame * f = buf->frame();
+    if (src) *src = f->src;
+    if (dst) *dst = f->dst;
+
+    unsigned int payload_bytes = buf->size() - Ethernet::HEADER_SIZE;
+    unsigned int to_copy = (payload_bytes < size) ? payload_bytes : size;
+    std::memcpy(data, f->data, to_copy);
+    return static_cast<int>(to_copy);
 }
 
 template <typename Engine>

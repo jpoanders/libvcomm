@@ -121,12 +121,35 @@ int main()
     }
 
     // -------------------------------------------------------------------------
-    // 4. TODO(joao): marshalling ida e volta.
-    //    Monte um buffer com alloc(), escreva um payload conhecido, passe por
-    //    unmarshal() e confira que src, dst e os bytes voltam idênticos.
-    //    É o teste que pega erro de byte order e de offset de cabeçalho ANTES
-    //    de você estar depurando com tshark às duas da manhã.
+    // 4. Marshalling — roundtrip via alloc() + unmarshal().
     // -------------------------------------------------------------------------
+    {
+        Vehicle_NIC nic;
+        const unsigned char payload[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
+        Ethernet::Address dst = Ethernet::BROADCAST;
+
+        Vehicle_NIC::Buffer * buf = nic.alloc(
+            dst, Traits<Ethernet>::PROTOCOL_NUMBER, sizeof(payload));
+        CHECK(buf != 0);
+
+        if (buf) {
+            std::memcpy(buf->frame()->data, payload, sizeof(payload));
+
+            Ethernet::Address got_src, got_dst;
+            unsigned char got_data[sizeof(payload)];
+            int n = nic.unmarshal(buf, &got_src, &got_dst, got_data,
+                                  sizeof(got_data));
+
+            CHECK(n == static_cast<int>(sizeof(payload)));
+            CHECK(got_dst == Ethernet::BROADCAST);
+            CHECK(got_src == nic.address());
+            CHECK(std::memcmp(got_data, payload, sizeof(payload)) == 0);
+            CHECK(buf->frame()->prot ==
+                  htons(Traits<Ethernet>::PROTOCOL_NUMBER));
+
+            nic.free(buf);
+        }
+    }
 
     return ::test::summary("pilha");
 }
