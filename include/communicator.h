@@ -75,13 +75,7 @@ Communicator<Channel>::Communicator(Channel * channel, Address address)
 
 template <typename Channel> Communicator<Channel>::~Communicator()
 {
-<<<<<<< HEAD
-    // TODO(joao): _channel->detach(this, _address);
-    // The PDF writes `Channel::detach(this, _address)` — a static call in an
-    // instance method.  Use the instance form; record the deviation.
-=======
     _channel->detach(this, _address);
->>>>>>> main
 }
 
 template <typename Channel>
