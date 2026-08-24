@@ -126,6 +126,25 @@ protected:
     bool engine_valid() const { return _sockfd >= 0; }
 
     // -------------------------------------------------------------------------
+    // Diagnóstico do caminho de RX.  drain() não pode imprimir — está dentro do
+    // handler —, então ele registra aqui e quem lê é o laço principal.
+    //
+    // Os contadores são MONOTÔNICOS: a Engine nunca zera.  Quem lê guarda o
+    // último valor que viu e reporta a diferença.  A alternativa (o acessor ler
+    // e zerar) tem uma janela real: o handler pode incrementar entre a leitura
+    // e a escrita do zero, e essa contagem some.
+    //
+    // Leia o CONTADOR primeiro e o errno depois — drain() escreve na ordem
+    // inversa, de modo que um contador que subiu sempre tem um errno pelo menos
+    // tão novo quanto ele.
+    // -------------------------------------------------------------------------
+    unsigned int engine_rx_errors() const
+    {
+        return static_cast<unsigned int>(_rx_errors);
+    }
+    int engine_rx_error() const { return static_cast<int>(_rx_error); }
+
+    // -------------------------------------------------------------------------
     // Callback de subida.  A NIC implementa.  Chamado uma vez por frame que
     // sobreviveu à filtragem.
     //
