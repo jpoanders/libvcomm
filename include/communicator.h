@@ -109,8 +109,12 @@ bool Communicator<Channel>::receive(Message * message)
     // automatizado vai morrer com segfault no shutdown.
     //
     // ARMADILHA 3, nova com o modelo de sinal: sem_wait() dentro de p() volta
-    // com EINTR toda vez que um frame chega enquanto você espera.  O sem.h já
-    // trata isso no laço; se você escrever um p() próprio, não esqueça.
+    // com EINTR quando um frame chega enquanto você espera — a MENOS que o
+    // sigaction do SIGIO tenha SA_RESTART.  Medido nas duas configurações em
+    // 23/08/2026: sem SA_RESTART -> -1/EINTR(4); com SA_RESTART -> 0, o
+    // sem_wait retoma sozinho.  O sem.h já faz o laço de EINTR de qualquer
+    // jeito, e é assim que deve ser: o laço custa duas linhas e vale sob as
+    // duas escolhas.  Se você escrever um p() próprio, não esqueça dele.
     (void)message;
     return false;
 }

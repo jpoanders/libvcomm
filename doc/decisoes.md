@@ -124,8 +124,8 @@ houver necessidade de retentativa, é preciso `alloc` novo e remontar o frame.
 ### 2.1 Recepção por sinal POSIX, não por thread
 
 **Decisão:** a recepção de frames acontece dentro de um *signal handler*, armado
-com `fcntl(F_SETOWN)` + `fcntl(F_SETSIG, SIGRTMIN)` + `O_ASYNC | O_NONBLOCK` e
-tratado por um `sigaction` com `SA_SIGINFO`. Não há thread de recepção.
+com `fcntl(F_SETOWN)` + `O_ASYNC | O_NONBLOCK` e tratado por um `sigaction` para
+`SIGIO`. Não há thread de recepção.
 
 **Por quê.** É o que o enunciado manda:
 
@@ -144,14 +144,51 @@ POSIX é o sinal. Manter isso preserva a estrutura que a Etapa 2 vai reaproveita
 interrupção; `Concurrent_Observer` usa semáforo porque `sem_post(3)` é
 async-signal-safe; o pool de `Buffer` é pré-alocado porque `malloc` não é.
 
-**Sinal de tempo real, não `SIGIO`.** Sinais padrão não enfileiram: dois frames
-em rajada gerariam um sinal só. Os de tempo real enfileiram, e `SA_SIGINFO`
-ainda entrega `si_fd` (`man 2 fcntl`, `F_SETSIG`).
+**`SIGIO`, não um sinal de tempo real.** Consideramos `fcntl(F_SETSIG, SIGRTMIN)`
+e descartamos. O argumento a favor dos sinais de tempo real é que eles
+enfileiram, enquanto os padrão coalescem — dois frames em rajada podem gerar um
+sinal só. Mas isso **não custa nenhum frame** aqui, porque a garantia real não é
+o sinal e sim o laço de drenagem (abaixo): quando o handler roda, ele recolhe
+tudo que estiver no buffer do kernel.
 
-**`O_NONBLOCK` e drenagem em laço.** O handler chama `recvfrom` repetidamente
-até `EAGAIN`. O sinal é o gatilho; o laço é a garantia. Sair no primeiro frame
+**Medido, não argumentado** (24/08/2026, `make test-engine` com
+`cap_net_raw+ep`, interface `lo`): com o `SIGIO` bloqueado por `sigprocmask()`,
+50 frames enviados em rajada geraram **um** sinal pendente, e o `drain()`
+entregou os **50** ao `handle()` a partir dessa única entrada no handler. É a
+coalescência acontecendo — e é exatamente por isso que ela não custa frame.
+O teste é determinístico: não há `sleep` nem tolerância, porque o POSIX garante
+a entrega do sinal pendente antes do retorno do `sigprocmask()` que desbloqueia.
+
+Contra os de tempo real havia um modo de falha a mais. Se a fila de sinais
+enfileirados estourar, *"the kernel reverts to delivering `SIGIO`"* (`man 2
+fcntl`, `F_SETSIG`) — e a ação padrão do `SIGIO` no Linux é **terminar o
+processo** (`man 7 signal`). Usar RT com segurança exigiria tratar `SIGIO`
+**assim mesmo**, como fallback. Indo direto de `SIGIO`, esse caminho não existe.
+
+**O que se perde:** `si_fd`. Sem `F_SETSIG` não-zero o kernel não informa qual
+descritor gerou o evento. Na Etapa 1 há um socket só; a informação seria
+ignorada. Se a Etapa 2 trouxer mais de um descritor por Engine, esta é a decisão
+a revisar.
+
+**`O_NONBLOCK` e drenagem em laço — o mecanismo que sustenta o resto.** O handler
+chama `recvfrom` repetidamente até `EAGAIN`. O sinal é o gatilho; o laço é a
+garantia, e é ele que torna o coalescimento inofensivo. Sair no primeiro frame
 deixaria os demais parados no buffer do kernel até a chegada do próximo — e a
 latência medida viraria ficção.
+
+**Três braços de saída, não dois.** `EAGAIN`/`EWOULDBLOCK` é fim normal e sai
+calado; `EINTR` continua; qualquer outro `errno` é registrado antes de sair. O
+registro não pode imprimir — o `drain()` roda dentro do handler —, então vai
+para contadores `volatile sig_atomic_t` monotônicos que o laço principal lê
+(`engine_rx_errors()` / `engine_rx_error()`). Sem esse terceiro braço, uma
+interface que cai se manifesta como recepção que simplesmente emudece, sem
+rastro.
+
+*Medido* (24/08/2026, `sudo scripts/test-engine-veth.sh`): com a Engine armada
+sobre um par `veth`, um `ip link set vcomm0 down` fez `packet_notifier()` setar
+`sk_err = ENETDOWN` e disparar o `SIGIO`; o `recvfrom()` do `drain()` consumiu o
+erro e o contador registrou **`errno` 100, `ENETDOWN`**. O `NETDEV_DOWN` bastou
+— não foi preciso escalar para a remoção do device.
 
 **Contrapartida documentada:** disposição de sinal é estado global do processo,
 logo **uma Engine por processo**. Na Etapa 1 isso não incomoda (um processo = um
@@ -209,7 +246,7 @@ voltaria em silêncio.
 **Preço:** capacidade fixa. `insert()` devolve `false` quando enche, e isso é
 `Statistics::rx_dropped` — não um erro a esconder.
 
-Verificado empiricamente: produtor num handler de `SIGRTMIN` a 20 kHz,
+Verificado empiricamente: produtor num handler de sinal a 20 kHz,
 consumidor no `main`, 3 s — **58.937 sinais, 176.811 itens, zero perdidos, FIFO
 preservado.**
 
