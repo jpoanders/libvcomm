@@ -1,44 +1,5 @@
 #!/bin/bash
-# Records the virtual bus on the HOST, in parallel with the fleet.
-#
-#     scripts/capture.sh start     begin recording (returns once it is live)
-#     scripts/capture.sh stop      stop and flush
-#
-# run-fleet.sh calls both, because only it knows when the fleet starts and
-# ends — and the recording has to be live BEFORE the first VM, or the frames
-# you lose are exactly the ones you wanted.
-#
-# WHY ON THE HOST AND NOT INSIDE A VM: the guide is explicit — the host
-# timestamps both directions of a round trip with a SINGLE clock.  Subtracting
-# two guest clocks would measure their disagreement as much as the network, and
-# disciplining those clocks is Stage 3's job, not something to fake here.
-#
-# ------------------------------------------------------------------------------
-# TWO RECORDERS, AND WHY THE PRIMARY ONE IS NOT A SNIFFER
-#
-#   build/bus-tap  (primary, ALWAYS)   joins QEMU's multicast group with an
-#       ordinary UDP socket.  No CAP_NET_RAW, no group membership, no external
-#       package: a bare `make` on a machine that has never heard of Wireshark
-#       still produces a capture and therefore still prints a latency.  That
-#       matters because dumpcap is installed 0754 root:wireshark on Debian and
-#       Ubuntu — a grader outside the `wireshark` group cannot even execute it.
-#
-#   dumpcap        (secondary, IF USABLE)   the classic sniffer, on the
-#       interface.  Never fatal.  It is kept because it observes the same bus
-#       through a completely different mechanism, so when both are present they
-#       corroborate each other, and because a .pcapng is what the panel expects
-#       to be shown.
-#
-# WHICH INTERFACE, for the secondary.  QEMU sends the bus as UDP multicast from
-# the host, and by default the kernel routes 239.10.10.10 out of whatever
-# `ip route get` picks — on this machine, WiFi.  run-fleet.sh pins it instead,
-# by passing QEMU `localaddr=127.0.0.1` on the socket netdev, which sets
-# IP_MULTICAST_IF and joins the group on loopback.  Pinned bus => capture on
-# `lo`; otherwise fall back to `any`.
-#
-# LIMIT THE GUIDE REQUIRES YOU TO RESPECT: seeing a datagram on the host does
-# NOT prove a guest processed the message.  Correctness is proven by the VM
-# logs; the capture is proof of format and of timing.
+
 set -euo pipefail
 
 CAPTURES="${CAPTURES:-build/captures}"
@@ -73,10 +34,7 @@ start_tap() {
            --out "$PREFIX" >/dev/null 2>"$TAP_LOG" &
     echo $! > "$TAP_PID"
 
-    # Wait for the tap to say it has JOINED THE GROUP, not merely that the
-    # process exists.  Between fork and IP_ADD_MEMBERSHIP it would miss frames,
-    # and the ones it would miss are the first — which is where a boot-order
-    # bug shows up.
+   
     local waited=0
     until grep -q 'listening' "$TAP_LOG" 2>/dev/null; do
         sleep 0.1
@@ -129,21 +87,13 @@ start() {
     stop >/dev/null 2>&1 || true
     mkdir -p "$CAPTURES"
 
-    # Delete EVERY recording of the previous run before starting this one, and
-    # do it here rather than inside each recorder.  If the secondary does not
-    # run today — no dumpcap on this machine — its file from yesterday would
-    # otherwise survive, and frames.sh would fall back to it the moment the tap
-    # produced nothing.  A stale capture that analyses cleanly is worse than no
-    # capture at all: it turns a failed fleet run into a green one.
     rm -f "$FRAMES" "$PREFIX.pcap" "$PCAP" "$TAP_LOG"
 
     start_tap
     start_dumpcap
 }
 
-# ------------------------------------------------------------------------------
-# SIGINT, then escalate.  Both recorders flush on SIGINT; SIGKILL would cost the
-# tail of the capture, which is the last measurements.
+
 stop_one() {
     local pidfile="$1"
     [ -f "$pidfile" ] || return 0

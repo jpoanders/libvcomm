@@ -1,21 +1,3 @@
-// =============================================================================
-// Tests for PROTOCOL and COMMUNICATOR — the two layers the fleet depends on and
-// that nothing used to exercise on the host.
-//
-// Run with `make test-protocol`.  No socket, no privileges, no VM: the stack is
-// instantiated over tests/loopback_engine.h, which returns every frame it is
-// given straight back up through handle().
-//
-// WHY THIS FILE EXISTS.  Communicator::send() used to broadcast to
-// Address::broadcast(), whose port defaults to 0, so Protocol::update() notified
-// condition 0 and no Communicator — all of which attach on a real port — ever
-// matched.  Every message in the library was delivered to nobody and silently
-// freed.  test-stack could not see it (it stops below Protocol) and the fleet
-// would have shown it as "the receivers print nothing", two minutes of QEMU per
-// attempt.  Section 1 below is that bug's regression test and it runs in
-// milliseconds.
-// =============================================================================
-
 #include "check.h"
 
 #include "loopback_engine.h"

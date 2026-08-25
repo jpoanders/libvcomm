@@ -4,21 +4,6 @@
 // One binary, installed on every VM.  The starter's /init exports SO2_VM_ID and
 // runs /student/app, so the ROLE comes from the id — five vehicles, one image.
 //
-// THE MODEL THE ASSIGNMENT ASKS FOR:
-//
-//     vehicle   = QEMU VM              (macro-object with a VM)
-//     component = POSIX process        (macro-object with a process)
-//
-// so this main is the vehicle's root process and the components are its
-// children.  The root owns NO socket: it forks first and each child builds its
-// own NIC / Protocol / Communicator afterwards.  That order is not a style
-// choice — Raw_Socket_Engine arms SIGIO with fcntl(F_SETOWN, getpid()) and
-// keeps a process-global _instance, so a child forked from a process that
-// already had a live Engine would inherit a socket signalling the WRONG pid.
-// One Engine per process, established after the fork (doc/design-decisions.md
-// §2.1).
-//
-// -----------------------------------------------------------------------------
 // WHAT THE TEST PROVES, AND HOW
 //
 //   VM 1, component 0        the REQUESTER.  Broadcasts REQUEST 0..N-1.

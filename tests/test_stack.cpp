@@ -1,16 +1,3 @@
-// =============================================================================
-// Tests for the STACK — the ones you are going to make pass.
-//
-// Run with `make test-stack`.  THEY FAIL TODAY, and they are meant to: each
-// CHECK here is a piece of the contract that is still a TODO.  Implement in the
-// order the tests appear and use the green as your stopwatch.
-//
-// These tests do not open a raw socket (they run on the host, without
-// CAP_NET_RAW).  They exercise what does NOT depend on the kernel: Observer,
-// the buffer pool, marshalling.  The proof that frames really travel is the
-// five-VM fleet, not this.
-// =============================================================================
-
 #include "check.h"
 #include "libvcomm.h"
 

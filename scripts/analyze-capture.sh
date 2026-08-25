@@ -1,21 +1,5 @@
 #!/bin/bash
-# Pairs REQUEST with RESPONSE in the host capture and computes the latency.
-#
-# This is the "latency statistics are computed automatically and labeled
-# correctly" item, and it runs as the last step of `make`, which is where the
-# assignment requires the number to appear.
-#
-# WHY THE HOST CAPTURE AND NOT THE GUESTS' CLOCKS.  Both ends of every pair are
-# timestamped by ONE clock, on the host: the kernel stamps each datagram as it
-# arrives (SO_TIMESTAMPNS in tools/bus_tap.cpp) exactly as a sniffer would.
-# Subtracting two guest clocks would measure their disagreement as much as the
-# network, and disciplining those clocks is Stage 3's job, not something to
-# fake here.
-#
-# WHAT THE NUMBER IS.  REQUEST leaving vehicle 1 to RESPONSE arriving from a
-# responder: a ROUND TRIP, including each guest's processing.  It is not a
-# one-way latency and is not labelled as one.  Halving it would assume a
-# symmetry nothing here measures.
+
 set -euo pipefail
 
 CAPTURES="${CAPTURES:-build/captures}"
@@ -26,15 +10,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "analyze-capture: $*" >&2; exit 1; }
 
-# WHERE THE BYTES COME FROM is frames.sh's business, not ours: it prefers the
-# unprivileged bus-tap recording and falls back to a dumpcap pcapng, and both
-# arrive here in the same "<epoch>\t<hex>" form.  That separation is what let
-# the privileged capture dependency be dropped without touching a line of the
-# analysis below.
-#
-# An explicit argument or PCAP= means "read THAT capture" — the tap's stream
-# must not silently win over it, or the negative tests would pass by reading
-# the wrong file.
 if [ $# -ge 1 ]; then
     case "$1" in
         *.frames) FRAMES="$1"; PCAP="${PCAP:-/nonexistent}" ;;

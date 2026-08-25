@@ -1,11 +1,3 @@
-// =============================================================================
-// Tests for the SUPPORT classes — the ones that came already implemented.
-//
-// Run this first: `make test-support`.  It must pass 100% BEFORE you write a
-// single line of the Engine.  It is your baseline: if something here breaks
-// later, the problem is in what you touched, not in the foundation.
-// =============================================================================
-
 #include <thread>
 #include <chrono>
 

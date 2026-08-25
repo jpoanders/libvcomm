@@ -69,21 +69,6 @@ bool Conditionally_Data_Observed<T, C>::notify(const C & c, T * d)
     return notified;
 }
 
-// -----------------------------------------------------------------------------
-// Concurrent_Observed / Concurrent_Observer
-//
-// TRANSCRIBED from full_assignment.pdf (blue block, "Fundamentals for Observer
-// X Observed").  The body of these methods is the assignment's, not mine — it
-// is here so you have a compiling baseline, and it is worth reading line by
-// line because it comes up at the panel.
-//
-// ONE NECESSARY CORRECTION: the PDF calls obs->rank() inside notify(), but the
-// PDF's Concurrent_Observer has neither a _rank field nor a constructor that
-// takes one.  As printed, it does not compile.  We inherit _rank from the same
-// idea as Conditional_Data_Observer.  Note it in doc/design-decisions.md —
-// showing that you found the inconsistency beats pretending it isn't there.
-// -----------------------------------------------------------------------------
-
 template <typename D, typename C = void> class Concurrent_Observer;
 
 template <typename D, typename C = void> class Concurrent_Observed
@@ -109,14 +94,6 @@ public:
         _observers.remove(o);
     }
 
-    // Returns false when NOBODY TOOK the data — either no observer has this
-    // rank, or the one that has it could not accept (queue full).  The caller
-    // still owns `d` in that case and must release it.
-    //
-    // Note the ownership rule this implies: at most ONE observer per rank may
-    // accept, otherwise two of them would end up freeing the same buffer.  Each
-    // process in this library binds one Communicator per port, so the rule
-    // holds by construction.
     bool notify(const C & c, D * d)
     {
         bool notified = false;
@@ -145,21 +122,6 @@ public:
     Concurrent_Observer() : _semaphore(0), _rank() {}
     virtual ~Concurrent_Observer() {}
 
-    // Called INSIDE THE SIGNAL HANDLER.  Note that it does not block: it
-    // enqueues and wakes.  It is this insert()/v() pair that replaces the
-    // forbidden rendezvous — and both halves are async-signal-safe, which is
-    // what makes this line legal here.
-    //
-    // RETURNS FALSE WHEN THE QUEUE IS FULL, and that return is load-bearing
-    // (decision 1.11 in doc/design-decisions.md; the PDF's update() is void).
-    // Ignoring it used to cost twice over: the message was lost AND the buffer
-    // was never freed, because Observed::notify() reported success and nobody
-    // upstream released it.  Now a full queue is indistinguishable from "no
-    // observer wanted it" — Protocol::update() frees the buffer and
-    // NIC::handle() counts it in rx_dropped.
-    //
-    // The v() happens only after a successful insert, so updated() can never
-    // wake on an empty queue.
     virtual bool update(const C & c, D * d)
     {
         (void)c;
@@ -169,20 +131,12 @@ public:
         return true;
     }
 
-    // Called ON THE APPLICATION THREAD.  Blocks until there is data.
     D * updated()
     {
         _semaphore.p();
         return _data.remove();
     }
 
-    // Same, with a ceiling.  Returns 0 if nothing arrived within timeout_ms.
-    //
-    // Why it exists: receive() is the only blocking point in the library, and
-    // an automated test needs a receiver that gives up and REPORTS instead of
-    // one that hangs until the fleet timeout kills the VM with no verdict.
-    // doc/design-decisions.md §2.1 answers the guide's question 3 for the
-    // Engine; this answers it for the application.
     D * updated(unsigned int timeout_ms)
     {
         if (!_semaphore.p(timeout_ms))

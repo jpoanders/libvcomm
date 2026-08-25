@@ -4,57 +4,11 @@
 #include <atomic>
 #include <cstddef>
 
-// =============================================================================
-// List / Ordered_List — support classes.  ALREADY IMPLEMENTED.
-//
-// REWRITTEN on 2026-08-23.  The first version used std::deque/std::vector with
-// std::mutex.  That stopped being legal once reception started happening inside
-// a signal handler:
-//
-//   - pthread_mutex_lock is NOT on the list of async-signal-safe functions
-//     (man 7 signal-safety).  Locking a mutex from inside a handler that
-//     interrupted the very thread already holding it is immediate deadlock.
-//   - deque::push_back and vector::push_back may call malloc, which is not on
-//     the list either.
-//
-// What IS allowed inside a handler, and is the foundation of these two classes:
-// LOCK-FREE std::atomic objects.  No mutex, no syscall, no allocation.
-// (C++17 [support.signal]; the static_asserts below make the compiler prove
-// it.)
-//
-// This is the same decision EPOS makes with intrusive lists, and for the same
-// reason: in EPOS the top of the reception path runs in hardware interrupt
-// context; here it runs in signal context.  The restriction is identical.
-//
-// The price paid, and you need to be able to defend it: FIXED capacity.
-// Without allocation there is no growing.  Both classes say "no" when they
-// fill up instead of allocating.
-// =============================================================================
-
 static_assert(std::atomic<unsigned int>::is_always_lock_free,
               "std::atomic<unsigned> is not lock-free on this platform: the "
               "standard library would use a mutex underneath and the handler "
               "would break");
 
-// -----------------------------------------------------------------------------
-// List<T, CAP> — FIFO queue of pointers, one producer and one consumer (SPSC).
-//
-// Used by Concurrent_Observer to hold what arrived and has not been consumed
-// yet.  And its two sides are exactly the project's two contexts:
-//
-//     PRODUCER = the signal handler          -> insert()
-//     CONSUMER = the application thread      -> remove()
-//
-// Fixed-size ring with two atomic indices.  Correct without a lock because each
-// index has a single writer: the producer only writes _tail, the consumer only
-// writes _head.  The release/acquire pair on those indices is what publishes
-// the slot write to the other side — without it, the consumer could see the new
-// index and the old pointer.
-//
-// CAP must be a power of 2 (the wraparound is an AND, not a modulo — division
-// on an interrupt path is waste).  One slot is always left empty to tell "full"
-// from "empty", so the usable capacity is CAP-1.
-// -----------------------------------------------------------------------------
 template <typename T, unsigned int CAP = 32> class List
 {
     static_assert(CAP >= 2 && (CAP & (CAP - 1)) == 0,
@@ -67,14 +21,6 @@ public:
             _slot[i] = 0;
     }
 
-    // Called from the handler.  Returns false if the queue is full.
-    //
-    // >>> WARNING: this bool is new, and ignoring it means SILENTLY LOSING
-    // >>> MESSAGES.  Concurrent_Observer::update() ignores it today.  When the
-    // >>> queue fills up, the message that arrived has nowhere to go — and that
-    // >>> is exactly the Ethernet::Statistics::rx_dropped counter.  Decide what
-    // >>> to do and write it in doc/design-decisions.md; "I didn't think about
-    // >>> it" is the worst possible answer.
     bool insert(T * e)
     {
         const unsigned int t = _tail.load(std::memory_order_relaxed);
@@ -117,27 +63,6 @@ private:
     std::atomic<unsigned int> _tail;   // only the producer writes
 };
 
-// -----------------------------------------------------------------------------
-// Ordered_List<T, C, CAP> — collection of observers, each with a rank of type
-// C.  The name comes from the PDF (Observed::Observers).
-//
-// The asymmetry that defines the design: attach()/detach() run on the main
-// thread, when objects are constructed and destroyed; notify() TRAVERSES from
-// inside the handler.  In other words, lots of reading in signal context and
-// very little writing outside it.
-//
-// Fixed-size vector of atomic slots.  detach() compacts nothing: it writes 0
-// into the slot (a tombstone).  Compacting would shift the indices underneath a
-// traversal that may be happening right now inside the handler.  A later
-// insert() reuses the empty slot before growing.
-//
-// The Iterator SKIPS empty slots on its own, so that the notify() loop stays
-// identical to the one printed in the assignment:
-//
-//     for(Observers::Iterator obs = _observers.begin(); obs != _observers.end();
-//     obs++)
-//         if(obs->rank() == c) ...
-// -----------------------------------------------------------------------------
 template <typename T, typename C, unsigned int CAP = 16> class Ordered_List
 {
     static_assert(std::atomic<T *>::is_always_lock_free,

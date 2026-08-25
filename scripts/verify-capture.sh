@@ -1,23 +1,5 @@
 #!/bin/bash
-# Proves the frame layout FROM THE CAPTURE ALONE.
-#
-# This is the acceptance-checklist item "an external capture independently
-# proves frame layout", and the word that matters is *independently*: nothing
-# here reads a VM log or trusts the application.  It reads bytes off the wire
-# and asserts what the assignment requires of them.
-#
-# What it proves, per project frame:
-#   - the destination is ff:ff:ff:ff:ff:ff, every time, with no exception;
-#   - the source is a real per-VM MAC, 02:00:00:00:00:<id>, not a hard-coded
-#     zero;
-#   - bytes 12-13 are our EtherType in network order;
-#   - the payload begins with our magic at the documented offset;
-#   - and the cross-check that ties the two layers together: the vehicle id
-#     INSIDE the payload equals the last byte of the source MAC, so the frame
-#     really came from the vehicle it claims to.
-#
-# No guest IP is involved anywhere: the guest frame carries EtherType 0x88B5,
-# not 0x0800/0x86DD, which is visible in the same bytes.
+
 set -euo pipefail
 
 CAPTURES="${CAPTURES:-build/captures}"
@@ -27,15 +9,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "verify-capture: $*" >&2; exit 1; }
 
-# WHERE THE BYTES COME FROM is frames.sh's business, not ours: it prefers the
-# unprivileged bus-tap recording and falls back to a dumpcap pcapng, and both
-# arrive here in the same "<epoch>\t<hex>" form.  That separation is what let
-# the privileged capture dependency be dropped without touching a line of the
-# analysis below.
-#
-# An explicit argument or PCAP= means "read THAT capture" — the tap's stream
-# must not silently win over it, or the negative tests would pass by reading
-# the wrong file.
+
 if [ $# -ge 1 ]; then
     case "$1" in
         *.frames) FRAMES="$1"; PCAP="${PCAP:-/nonexistent}" ;;
