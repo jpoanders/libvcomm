@@ -50,7 +50,7 @@ void Conditionally_Data_Observed<T, C>::attach(Observer * o, const C & c)
 }
 
 template <typename T, typename C>
-void Conditionally_Data_Observed<T, C>::detach(Observer * o, const C & c)
+void Conditionally_Data_Observed<T, C>::detach(Observer * o, const C &)
 {
     _observers.remove(o);
 }
@@ -109,14 +109,22 @@ public:
         _observers.remove(o);
     }
 
+    // Returns false when NOBODY TOOK the data — either no observer has this
+    // rank, or the one that has it could not accept (queue full).  The caller
+    // still owns `d` in that case and must release it.
+    //
+    // Note the ownership rule this implies: at most ONE observer per rank may
+    // accept, otherwise two of them would end up freeing the same buffer.  Each
+    // process in this library binds one Communicator per port, so the rule
+    // holds by construction.
     bool notify(const C & c, D * d)
     {
         bool notified = false;
         for (typename Observers::Iterator obs = _observers.begin();
              obs != _observers.end(); obs++) {
             if (obs->rank() == c) {
-                obs->update(c, d);
-                notified = true;
+                if (obs->update(c, d))
+                    notified = true;
             }
         }
         return notified;
@@ -142,20 +150,43 @@ public:
     // forbidden rendezvous — and both halves are async-signal-safe, which is
     // what makes this line legal here.
     //
-    // >>> _data.insert() has returned a bool since 2026-08-23 and this line
-    // >>> IGNORES it.  Queue full = message silently dropped.  See the note in
-    // >>> list.h.
-    virtual void update(const C & c, D * d)
+    // RETURNS FALSE WHEN THE QUEUE IS FULL, and that return is load-bearing
+    // (decision 1.11 in doc/design-decisions.md; the PDF's update() is void).
+    // Ignoring it used to cost twice over: the message was lost AND the buffer
+    // was never freed, because Observed::notify() reported success and nobody
+    // upstream released it.  Now a full queue is indistinguishable from "no
+    // observer wanted it" — Protocol::update() frees the buffer and
+    // NIC::handle() counts it in rx_dropped.
+    //
+    // The v() happens only after a successful insert, so updated() can never
+    // wake on an empty queue.
+    virtual bool update(const C & c, D * d)
     {
         (void)c;
-        _data.insert(d);
+        if (!_data.insert(d))
+            return false;
         _semaphore.v();
+        return true;
     }
 
     // Called ON THE APPLICATION THREAD.  Blocks until there is data.
     D * updated()
     {
         _semaphore.p();
+        return _data.remove();
+    }
+
+    // Same, with a ceiling.  Returns 0 if nothing arrived within timeout_ms.
+    //
+    // Why it exists: receive() is the only blocking point in the library, and
+    // an automated test needs a receiver that gives up and REPORTS instead of
+    // one that hangs until the fleet timeout kills the VM with no verdict.
+    // doc/design-decisions.md §2.1 answers the guide's question 3 for the
+    // Engine; this answers it for the application.
+    D * updated(unsigned int timeout_ms)
+    {
+        if (!_semaphore.p(timeout_ms))
+            return 0;
         return _data.remove();
     }
 
