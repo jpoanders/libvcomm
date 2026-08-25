@@ -653,12 +653,19 @@ as an optional extra that is a prerequisite of nothing.
 
 ## 4. Open items
 
-- [ ] Diagrams in `doc/` (fleet topology; layers; the sequence of a message from
-      `send()` until the application thread wakes up, marking where the signal
-      context ends). The assignment requires them.
-- [ ] Stage 1 slides in `doc/`, with the performance evaluation.
+- [ ] Stage 1 slides in `doc/`, with the performance evaluation. The only
+      delivery artefact that does not exist yet.
 - [ ] Confirm the EtherType `0x88B5` with Artur and André before the
       presentation.
+
+### Closed on 2026-08-25
+
+| Was open | Where it landed |
+|---|---|
+| Diagrams in `doc/` (fleet topology; layers; the sequence of a message from `send()` until the application thread wakes up, marking where the signal context ends) | `doc/DOCUMENTACAO_UML.md` §1–§4, exported to `doc/uml-png/`. The signal context is marked in §3.3. |
+| `make` had to compile **and run** the whole evaluation | `.DEFAULT_GOAL := check`; the pipeline runs to `stats` and returns non-zero on any failure |
+| The average latency had to be computed automatically at the end of `make` | `scripts/analyze-capture.sh`, the last target of `check`. Measured 2.371 ms mean round-trip over 80 samples on 2026-08-25 |
+| Five vehicles as VMs, components as POSIX processes | `scripts/run-fleet.sh` + `fork()` in `app/main.cpp`: 5 VMs × 3 processes, 5/5 OK |
 
 ### Closed on 2026-08-24
 
