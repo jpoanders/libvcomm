@@ -224,8 +224,18 @@ int Protocol<NIC_T>::receive(Buffer * buf, Address * from, void * data,
     if (from)
         *from = Address(src_mac, hdr->_from_port);
 
-    // use the _length field from the header, reliable across all engines
+    // Use the _length field from the header: reliable across all engines,
+    // unlike frame-length arithmetic (see NIC::unmarshal's contract).
+    //
+    // CLAMPED first.  _length arrives from the wire and nothing so far has
+    // checked it against what actually turned up.  to_copy is already bounded
+    // by the caller's `size`, so a bogus value could not overflow `data` — but
+    // it could read past the end of the bytes unmarshalled into raw_payload.
+    const unsigned int arrived =
+        static_cast<unsigned int>(payload_bytes) - sizeof(Header);
     unsigned int data_bytes = hdr->_length;
+    if (data_bytes > arrived)
+        data_bytes = arrived;
     unsigned int to_copy = (data_bytes < size) ? data_bytes : size;
     std::memcpy(data, raw_payload + sizeof(Header), to_copy);
 

@@ -9,6 +9,7 @@
 //   hour the first time you see it.
 #include <semaphore.h>
 #include <cerrno>
+#include <ctime>
 
 // =============================================================================
 // Semaphore — support class.  ALREADY IMPLEMENTED.  Thin wrapper over POSIX
@@ -43,6 +44,33 @@ public:
     {
         while (sem_wait(&_sem) == -1 && errno == EINTR)
             ;
+    }
+
+    // Same, with a ceiling.  Returns false if the timeout expired first.
+    //
+    // sem_timedwait takes an ABSOLUTE deadline, which is why the EINTR retry
+    // below can reuse `ts` untouched: a signal arriving mid-wait cannot extend
+    // the deadline.  Under this library that matters — SIGIO fires on every
+    // frame that arrives, so EINTR here is the common case, not the rare one.
+    bool p(unsigned int timeout_ms)
+    {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == -1)
+            return false;
+
+        ts.tv_sec += timeout_ms / 1000;
+        ts.tv_nsec += static_cast<long>(timeout_ms % 1000) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) {
+            ts.tv_nsec -= 1000000000L;
+            ts.tv_sec += 1;
+        }
+
+        while (sem_timedwait(&_sem, &ts) == -1) {
+            if (errno == EINTR)
+                continue;
+            return false; // ETIMEDOUT
+        }
+        return true;
     }
 
     // v() / up / post — never blocks.

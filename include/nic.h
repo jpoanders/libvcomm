@@ -88,8 +88,8 @@ private:
 
 template <typename Engine>
 NIC<Engine>::NIC(const char * iface)
-    : Engine(iface, Traits<Ethernet>::PROTOCOL_NUMBER), _statistics(), _buffer(),
-      _armed(false)
+    : Engine(iface, Traits<Ethernet>::PROTOCOL_NUMBER), _statistics(),
+      _buffer(), _armed(false)
 {
     if (Engine::engine_valid())
         _armed = Engine::engine_start();
@@ -202,7 +202,8 @@ void NIC<Engine>::handle(Ethernet::Frame * frame, unsigned int size)
 
     // The RX HALF, and only it.  See the note on the pool split above alloc().
     Buffer * buf = 0;
-    for (unsigned int i = Traits<Ethernet>::SEND_BUFFERS; i < BUFFER_SIZE; i++) {
+    for (unsigned int i = Traits<Ethernet>::SEND_BUFFERS; i < BUFFER_SIZE;
+         i++) {
         if (_buffer[i].lock()) {
             buf = &_buffer[i];
             break;

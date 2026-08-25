@@ -53,12 +53,22 @@ public:
     // and fills `message` with the payload and the REAL size received.
     bool receive(Message * message);
 
+    // Same, with a ceiling.  Returns false if nothing arrived within
+    // timeout_ms.  This is what lets an automated receiver give up and REPORT
+    // instead of hanging until the fleet timeout kills its VM with no verdict.
+    bool receive(Message * message, unsigned int timeout_ms);
+
     const Address & address() const { return _address; }
 
 private:
-    // Called by the Protocol, from inside the signal handler.
-    void update(const typename Channel::Observer::Observing_Condition & c,
+    // Called by the Protocol, from inside the signal handler.  Returns false
+    // when the queue is full — see Concurrent_Observer::update.
+    bool update(const typename Channel::Observer::Observing_Condition & c,
                 Buffer * buf) override;
+
+    // Shared tail of the two receive()s: consumes a buffer the Protocol handed
+    // over.  The buffer is released by the Channel, on every path.
+    bool consume(Buffer * buf, Message * message);
 
     Channel * _channel;
     Address _address;
@@ -81,17 +91,39 @@ template <typename Channel> Communicator<Channel>::~Communicator()
 template <typename Channel>
 bool Communicator<Channel>::send(const Message * message)
 {
-    return _channel->send(_address, Address::broadcast(), message->data(),
-                          message->size()) > 0;
+    // BROADCAST TO OUR OWN PORT, and that port is the whole addressing scheme.
+    //
+    // This used to be Address::broadcast(), whose port defaults to 0.  The
+    // Protocol wrote that 0 into Packet::_to_port and, on the way up, notified
+    // condition 0 — which no Communicator is ever attached to.  Every message
+    // was delivered to nobody and freed, silently.  Nothing on the host caught
+    // it because nothing tested this layer; tests/test_protocol.cpp does now.
+    //
+    // Sending to our own port gives the port channel semantics: agents that
+    // share a port hear each other, which is what the assignment means by "the
+    // Communicator does not use explicit addressing".  Identifying who sent
+    // what is the message's job, not the address's.
+    return _channel->send(_address, Address::broadcast(_address.port()),
+                          message->data(), message->size()) > 0;
 }
 
 template <typename Channel>
 bool Communicator<Channel>::receive(Message * message)
 {
-    Buffer * buf = Observer::updated(); // <<< blocks here (semaphore p())
+    return consume(Observer::updated(), message); // <<< blocks (semaphore p())
+}
 
+template <typename Channel>
+bool Communicator<Channel>::receive(Message * message, unsigned int timeout_ms)
+{
+    return consume(Observer::updated(timeout_ms), message);
+}
+
+template <typename Channel>
+bool Communicator<Channel>::consume(Buffer * buf, Message * message)
+{
     if (!buf)
-        return false;
+        return false; // timed out, or woken with nothing to take
 
     Address from;
     unsigned char tmp[Message::MAX_SIZE];
@@ -106,10 +138,10 @@ bool Communicator<Channel>::receive(Message * message)
 }
 
 template <typename Channel>
-void Communicator<Channel>::update(
+bool Communicator<Channel>::update(
     const typename Channel::Observer::Observing_Condition & c, Buffer * buf)
 {
-    Observer::update(c, buf);
+    return Observer::update(c, buf);
 }
 
 #endif // LIBVCOMM_COMMUNICATOR_H
