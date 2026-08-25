@@ -15,6 +15,20 @@ class NIC : public Ethernet,
             private Engine
 {
 public:
+    // THE POOL IS PARTITIONED (decision closed 2026-08-24, §2.6 of
+    // doc/design-decisions.md).  alloc() only ever takes from
+    // [0, SEND_BUFFERS); handle() only ever takes from
+    // [SEND_BUFFERS, BUFFER_SIZE).
+    //
+    // Why not one shared pool, which is what this code used to be: neither side
+    // could reserve anything, so a transmission burst could leave handle() with
+    // no buffer — and handle() runs in signal context and cannot wait, so the
+    // frame is simply gone (rx_dropped).  The sender, by contrast, gets a 0
+    // from alloc() and can retry.  Reception is the side that must not be
+    // starvable, and the split makes the guaranteed RX depth a number we can
+    // state rather than a race.
+    //
+    // The price: neither half can borrow from an idle other half.
     static const unsigned int BUFFER_SIZE =
         Traits<Ethernet>::SEND_BUFFERS + Traits<Ethernet>::RECEIVE_BUFFERS;
 
@@ -25,7 +39,12 @@ public:
     typedef Conditional_Data_Observer<Buffer, Protocol_Number> Observer;
     typedef Conditionally_Data_Observed<Buffer, Protocol_Number> Observed;
 
-    NIC();
+    // The interface defaults to the one in Traits and every delivered path
+    // uses that default.  The parameter exists so a test — or a bench run on
+    // the host, where there is no eth0 — can point the same stack at another
+    // interface without a rebuild.  tests/test_engine.cpp already does the
+    // equivalent one layer down (VCOMM_TEST_IFACE).
+    explicit NIC(const char * iface = Traits<Ethernet>::INTERFACE);
     ~NIC();
 
     NIC(const NIC &) = delete;
@@ -36,12 +55,22 @@ public:
     int send(Address dst, Protocol_Number prot, const void * data,
              unsigned int size);
 
+    // Takes a buffer from the TX HALF of the pool and builds the Ethernet
+    // header in it.  Returns 0 when that half is exhausted — which is correct
+    // behaviour, not an error.
     Buffer * alloc(Address dst, Protocol_Number prot, unsigned int size);
 
     int send(Buffer * buf);
 
     void free(Buffer * buf);
 
+    // CONTRACT (decision closed 2026-08-24, doc/design-decisions.md §3):
+    // returns FRAME BYTES MINUS HEADER — padding included — and NOT "payload
+    // bytes".  The link layer has no length field of its own: Ethernet::Header
+    // is the 14 bytes on the wire and a fifteenth would stop it being Ethernet.
+    // On a medium that pads short frames to 60 bytes the two differ, and only
+    // this one is achievable here.  Whoever needs the true payload size reads
+    // Protocol::Header::_length, which travels in the frame.
     int unmarshal(Buffer * buf, Address * src, Address * dst, void * data,
                   unsigned int size);
 
@@ -58,9 +87,9 @@ private:
 };
 
 template <typename Engine>
-NIC<Engine>::NIC()
-    : Engine(Traits<Ethernet>::INTERFACE, Traits<Ethernet>::PROTOCOL_NUMBER),
-      _statistics(), _buffer(), _armed(false)
+NIC<Engine>::NIC(const char * iface)
+    : Engine(iface, Traits<Ethernet>::PROTOCOL_NUMBER), _statistics(), _buffer(),
+      _armed(false)
 {
     if (Engine::engine_valid())
         _armed = Engine::engine_start();
@@ -103,7 +132,7 @@ template <typename Engine>
 typename NIC<Engine>::Buffer *
 NIC<Engine>::alloc(Address dst, Protocol_Number prot, unsigned int size)
 {
-    for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
+    for (unsigned int i = 0; i < Traits<Ethernet>::SEND_BUFFERS; i++) {
         if (_buffer[i].lock()) {
             Ethernet::Frame * f = _buffer[i].frame();
             f->dst = dst;
@@ -171,8 +200,9 @@ void NIC<Engine>::handle(Ethernet::Frame * frame, unsigned int size)
 
     const unsigned int payload = size - Ethernet::HEADER_SIZE;
 
+    // The RX HALF, and only it.  See the note on the pool split above alloc().
     Buffer * buf = 0;
-    for (unsigned int i = 0; i < BUFFER_SIZE; i++) {
+    for (unsigned int i = Traits<Ethernet>::SEND_BUFFERS; i < BUFFER_SIZE; i++) {
         if (_buffer[i].lock()) {
             buf = &_buffer[i];
             break;
