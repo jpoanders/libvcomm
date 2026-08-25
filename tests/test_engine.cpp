@@ -1,54 +1,3 @@
-// =============================================================================
-// Tests for the ENGINE — Raw_Socket_Engine.
-//
-// Run with `make test-engine`.  Deliberately separate from test-stack: that one
-// promises to run without CAP_NET_RAW, and that promise is worth keeping.  This
-// one runs in both modes and says which it is in:
-//
-//   LEVEL 0  no privileges at all.  Exercises the constructor's FAILURE path,
-//            the destructor over an invalid Engine, and stop()'s idempotence.
-//
-//   LEVEL 1  needs CAP_NET_RAW.  Brings up a real socket on `lo` and exercises
-//            send, start, stop and drain.  Without privileges it is SKIPPED —
-//            it does not fail, otherwise a fresh checkout would look broken.
-//
-//            $ make app && sudo setcap cap_net_raw+ep build/test-engine
-//            $ make test-engine
-//
-//            Better than running the suite as root.  To use another interface
-//            (a veth pair, for instance):  VCOMM_TEST_IFACE=v0 make test-engine
-//
-// -----------------------------------------------------------------------------
-// WHY `lo` WORKS AS A TEST BUS
-//
-// The loopback delivers what it transmits.  Each engine_send() produces TWO
-// copies visible to the packet socket:
-//
-//   1. the transmission copy, with sll_pkttype == PACKET_OUTGOING;
-//   2. the reception copy, which goes through eth_type_trans() — and since the
-//      destination is ff:ff:ff:ff:ff:ff, it arrives as PACKET_BROADCAST.
-//
-// In other words: a single process is enough to be both sender AND receiver,
-// and drain()'s PACKET_OUTGOING filter gets tested for free.  If it did not
-// exist, every frame counter below would read DOUBLE.
-//
-// -----------------------------------------------------------------------------
-// WHY THE TESTS BLOCK SIGIO INSTEAD OF SLEEPING
-//
-// "send a burst and wait" is a test with a clock, and a test with a clock lies
-// on a loaded machine.  Here SIGIO is blocked with sigprocmask() during the
-// send.  While blocked, the signals generated collapse into ONE pending signal
-// — which is exactly the non-queueing of standard signals, the point in
-// dispute.  On the unblocking sigprocmask(), POSIX guarantees delivery before
-// it returns, and then the assertion is deterministic, with no sleep and no
-// tolerance:
-//
-//   N frames sent  ->  1 entry into the handler  ->  N calls to handle()
-//
-// That pair of numbers answers "why SIGIO and not a real-time signal" with a
-// measurement instead of an argument.  See doc/design-decisions.md.
-// =============================================================================
-
 #include "check.h"
 
 #include "engine/raw_socket_engine.h"
@@ -352,32 +301,7 @@ void level_1(const char * iface)
     g_engine_handler = 0;
 }
 
-// =============================================================================
-// LEVEL 1-E — the POSITIVE proof of drain()'s error arm.
-//
-// The other tests only show that engine_rx_errors() does NOT go up by itself.
-// This one shows that it goes up when it should.
-//
-// The trigger is bringing the interface down underneath an armed socket.  In
-// packet_notifier(), NETDEV_DOWN on the socket's interface sets
-// `sk->sk_err = ENETDOWN` and calls sk_error_report(), which wakes FASYNC — that
-// is, it fires a SIGIO.  drain() runs, recvfrom() consumes the sk_err and
-// returns -1/ENETDOWN, which is neither EAGAIN nor EINTR: it lands on the third
-// arm.
-//
-// It does NOT run together with level 1, for two reasons:
-//
-//   1. bringing an interface down is not something a test suite does unless
-//      told to;
-//   2. the medium must be a veth pair, not `lo`.  On a veth, what leaves through
-//      vcomm0 arrives at vcomm1 — a socket bound to vcomm0 would only see its
-//      own PACKET_OUTGOING copy, which drain() filters.  Level 1's reception
-//      assertions depend on loopback's self-delivery and would fail here.
-//
-// The orchestration lives in scripts/test-engine-veth.sh:
-//
-//     sudo scripts/test-engine-veth.sh
-// =============================================================================
+
 void level_error(const char * iface)
 {
     std::printf("\n== level 1-E: RX error on '%s' ==\n", iface);

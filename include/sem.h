@@ -1,30 +1,9 @@
 #ifndef LIBVCOMM_SEMAPHORE_H
 #define LIBVCOMM_SEMAPHORE_H
 
-// WHY THIS FILE IS CALLED sem.h AND NOT semaphore.h:
-//   with -Iinclude, gcc searches include/ BEFORE /usr/include even for
-//   #include <...>.  A file of ours named semaphore.h would make the
-//   `#include <semaphore.h>` below include itself — the include guard cuts the
-//   recursion and sem_t simply does not exist.  A mistake that costs half an
-//   hour the first time you see it.
 #include <semaphore.h>
 #include <cerrno>
-
-// =============================================================================
-// Semaphore — support class.  ALREADY IMPLEMENTED.  Thin wrapper over POSIX
-// sem_t.
-// =============================================================================
-//
-// WHY A SEMAPHORE AND NOT A RENDEZVOUS (panel answer):
-//   The assignment forbids a rendezvous on reception.  A semaphore decouples in
-//   time: the producer (the signal handler) does v() and moves on without
-//   waiting for anyone; the consumer does p() and sleeps until data is there.
-//   If the message arrives BEFORE the application calls receive(), the
-//   semaphore's counter is already 1 and p() returns immediately — nothing is
-//   lost.  It is exactly that memory of a past event that a rendezvous lacks.
-//
-// Classic pitfall: sem_wait() returns -1/EINTR when a POSIX signal arrives.
-// That is NOT an error, it means try again.  The loop below handles it.
+#include <ctime>
 
 class Semaphore
 {
@@ -43,6 +22,27 @@ public:
     {
         while (sem_wait(&_sem) == -1 && errno == EINTR)
             ;
+    }
+
+    bool p(unsigned int timeout_ms)
+    {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) == -1)
+            return false;
+
+        ts.tv_sec += timeout_ms / 1000;
+        ts.tv_nsec += static_cast<long>(timeout_ms % 1000) * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) {
+            ts.tv_nsec -= 1000000000L;
+            ts.tv_sec += 1;
+        }
+
+        while (sem_timedwait(&_sem, &ts) == -1) {
+            if (errno == EINTR)
+                continue;
+            return false; // ETIMEDOUT
+        }
+        return true;
     }
 
     // v() / up / post — never blocks.

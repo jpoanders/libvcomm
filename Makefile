@@ -5,17 +5,38 @@
 # evaluation test, and that the average latency be printed automatically at the
 # end.
 #
-# What ALREADY WORKS:  app, test-support, test-stack, test-engine, starter,
-#                      doctor, clean
-# What is a SKELETON:  image, fleet, capture, stats  (look for TODO)
+# A bare `make` runs the WHOLE evaluation:
+#
+#     compile -> host tests -> inject into the initramfs -> boot the fleet
+#             -> capture the bus -> prove the frame layout -> print the latency
+#
+# and it FAILS, with a non-zero status, if a receiver loses a frame, a VM blows
+# its timeout, the capture comes back empty, or the statistics cannot be
+# computed.  A target that only prints warnings is not gradeable.
+#
+# NOTHING IN THIS PIPELINE NEEDS sudo, AND NOTHING IN IT WILL EVER PROMPT FOR A
+# PASSWORD.  That is a hard requirement, not a convenience: an evaluator who is
+# asked for a password before the build will reasonably conclude the delivery
+# does not build.  The two places that classically want privileges are handled
+# instead of demanded --
+#
+#   capturing the bus   build/bus-tap joins QEMU's multicast group with an
+#                       ordinary UDP socket, so the latency below is computed
+#                       without dumpcap, without tshark and without membership
+#                       of the `wireshark` group (dumpcap is installed 0754
+#                       root:wireshark on Debian and Ubuntu: a grader outside
+#                       that group cannot even execute it);
+#   test-engine level 1 scripts/run-engine-test.sh climbs a ladder of ways to
+#                       get CAP_NET_RAW that cannot prompt, and if every rung
+#                       fails it says so and continues -- the fleet below then
+#                       exercises the same raw sockets inside the VMs anyway.
+#
+# `make caps` and `make bus-local` exist for the two optional extras that do
+# want sudo.  Neither is part of `make`.
 #
 # The repository is self-contained: the instructor's starter is in vendor/ and
 # no target here points outside the root.  `make doctor` says what is missing on
 # the machine before you find out in the middle of the fleet run.
-#
-# Once fleet/capture/stats are done, change the .DEFAULT_GOAL line below to
-# `check` — then a bare `make` runs the whole evaluation, as the assignment
-# asks.
 # =============================================================================
 
 CXX      := g++
@@ -47,30 +68,52 @@ SO2_MCAST ?= 239.10.10.10:15424
 export SO2_MCAST
 
 VMS      := 1 2 3 4 5
-VM_TIMEOUT ?= 20
+VM_TIMEOUT ?= 60   # ceiling only: the app powers its vehicle off when done
 
 LIB_SRC  := src/raw_socket_engine.cpp
 APP_SRC  := app/main.cpp $(LIB_SRC)
-HEADERS  := $(wildcard include/*.h include/engine/*.h)
+TAP_SRC  := tools/bus_tap.cpp
+HEADERS  := $(wildcard include/*.h include/engine/*.h app/*.h)
 
-.DEFAULT_GOAL := all
+# setcap/getcap live in /usr/sbin, which is not on a normal user's PATH.
+SETCAP := $(shell command -v setcap 2>/dev/null || echo /usr/sbin/setcap)
+GETCAP := $(shell command -v getcap 2>/dev/null || echo /usr/sbin/getcap)
+
+# The evaluation is a pipeline: the fleet has to run before there is a capture
+# to prove, and the capture before there is a latency to compute.  A grader
+# typing `make -j8` must not get those in some other order.
+.NOTPARALLEL:
+
+# THE ASSIGNMENT'S REQUIREMENT, in one line: `make` at the root compiles and
+# runs every evaluation test.
+.DEFAULT_GOAL := check
 
 # -----------------------------------------------------------------------------
 .PHONY: all
-all: app test-support
+all: app tap test-support test-stack test-protocol
 	@echo
-	@echo "  build ok. Next step: 'make test-stack' and implement until it is green."
-	@echo "  (image/fleet/capture/stats are still skeletons — see the TODOs in the Makefile)"
+	@echo "  build and host tests ok. 'make check' (or just 'make') runs the fleet too."
 
 # The evaluation's final target: THIS is what the assignment wants `make` to do.
-#
-# VCOMM_REQUIRE_RAW=1 makes test-engine FAIL instead of skipping level 1 when
-# there is no CAP_NET_RAW.  The evaluation target must not go green having
-# skipped the only test that opens a real socket.  Running `make test-engine` on
-# its own leaves the variable unset and the skip stays friendly.
+# It runs to the end on a bare machine, with no privileges and no interaction.
 .PHONY: check
-check: export VCOMM_REQUIRE_RAW := 1
-check: app test-support test-stack test-engine image fleet capture stats
+check: app tap test-support test-stack test-protocol test-engine \
+       image fleet capture stats
+	@echo
+	@echo "  =========================================================="
+	@echo "   make check: everything green."
+	@echo "  =========================================================="
+
+# OPTIONAL, and deliberately not a prerequisite of anything.  Grants
+# build/test-engine the capability its level 1 wants, so the raw socket is
+# exercised on the host as well as inside the VMs.  `make` is complete without
+# it; this only moves one proof earlier.  The capability lives on the inode, so
+# it has to be redone after every relink.
+.PHONY: caps
+caps: $(BUILD)/test-engine
+	sudo $(SETCAP) cap_net_raw+ep $(BUILD)/test-engine
+	@echo "  ok: cap_net_raw+ep on $(BUILD)/test-engine"
+	@echo "  (optional: run-engine-test.sh already handles its absence)"
 
 # -----------------------------------------------------------------------------
 .PHONY: app
@@ -82,8 +125,17 @@ $(BUILD)/student-app: $(APP_SRC) $(HEADERS) | $(BUILD)
 	@file $@ | grep -q 'x86-64'            || { echo "ERROR: binary is not x86-64"; exit 1; }
 	@echo "  ok: $@ is static x86-64"
 
+# The host-side recorder for the bus.  Not static and never enters the
+# initramfs: it runs on the host, beside QEMU, not inside a vehicle.
+.PHONY: tap
+tap: $(BUILD)/bus-tap
+
+$(BUILD)/bus-tap: $(TAP_SRC) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(TAP_SRC) -o $@
+	@echo "  ok: $@ (records the bus with no privileges)"
+
 # -----------------------------------------------------------------------------
-.PHONY: test-support test-stack test-engine
+.PHONY: test-support test-stack test-protocol test-engine
 test-support: $(BUILD)/test-support
 	@echo
 	./$(BUILD)/test-support
@@ -92,17 +144,28 @@ test-stack: $(BUILD)/test-stack
 	@echo
 	./$(BUILD)/test-stack
 
-# Runs without privileges (level 1 skips itself).  To exercise the real socket,
-# once:  sudo setcap cap_net_raw+ep $(BUILD)/test-engine
+# Protocol and Communicator over tests/loopback_engine.h: no socket, no
+# privileges, no VM.  It is what catches an addressing or ownership bug on the
+# host in milliseconds instead of through a two-minute fleet run.
+test-protocol: $(BUILD)/test-protocol
+	@echo
+	./$(BUILD)/test-protocol
+
+# The wrapper gets as much privilege as it can WITHOUT PROMPTING, runs level 1
+# if it succeeded, and says which rung it reached either way.  See the ladder
+# documented at the top of scripts/run-engine-test.sh.
 test-engine: $(BUILD)/test-engine
 	@echo
-	./$(BUILD)/test-engine
+	SETCAP=$(SETCAP) GETCAP=$(GETCAP) scripts/run-engine-test.sh
 
 $(BUILD)/test-support: tests/test_support.cpp tests/check.h $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Itests tests/test_support.cpp -o $@ $(LDFLAGS)
 
 $(BUILD)/test-stack: tests/test_stack.cpp tests/check.h $(APP_SRC) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Itests tests/test_stack.cpp $(LIB_SRC) -o $@ $(LDFLAGS)
+
+$(BUILD)/test-protocol: tests/test_protocol.cpp tests/check.h tests/loopback_engine.h $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -Itests tests/test_protocol.cpp -o $@ $(LDFLAGS)
 
 $(BUILD)/test-engine: tests/test_engine.cpp tests/check.h $(LIB_SRC) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Itests tests/test_engine.cpp $(LIB_SRC) -o $@ $(LDFLAGS)
@@ -123,40 +186,36 @@ $(VMSTAMP): $(STARTER_TGZ) $(STARTER_SUM) | $(BUILD)
 	@touch $@
 	@echo "  ok: starter unpacked into $(VMDIR)/ (working copy)"
 
+# One binary for all the VMs; the role comes from SO2_VM_ID.  The 'starter'
+# target already guaranteed the working copy, so the vendor/ tarball is never
+# touched and make clean-vm undoes any damage.
 .PHONY: image
 image: app starter
-	@echo "TODO(joao): inject the binary into the initramfs."
-	@echo "  One binary for all 5 VMs; the role comes from SO2_VM_ID."
-	@echo "  Steps: $(VMDIR)/install-app.sh \$$(readlink -f $(BUILD)/student-app)"
-	@echo "  See scripts/install-initramfs.sh"
-	@echo "  The 'starter' target already guaranteed the working copy — the"
-	@echo "  vendor/ tarball is untouched, and make clean-vm undoes any damage."
-	@false
+	@echo
+	WORKVM=$(VMDIR) scripts/install-initramfs.sh $(BUILD)/student-app
 
 # -----------------------------------------------------------------------------
+# Boots the vehicles in parallel, captures the bus on the host while they run,
+# and checks every vehicle's verdict.  Non-zero if any of them is missing.
 .PHONY: fleet
-fleet: image
-	@echo "TODO(joao): bring up the 5 VMs in parallel, with a timeout and one log per VM."
-	@echo "  See scripts/run-fleet.sh"
-	@false
+fleet: image tap
+	@echo
+	WORKVM=$(VMDIR) VMS="$(VMS)" VM_TIMEOUT=$(VM_TIMEOUT) scripts/run-fleet.sh
 
 # -----------------------------------------------------------------------------
+# The capture's own verdict: proves the frame layout from the bytes on the wire,
+# without reading a single VM log.  It is deliberately independent of `fleet`
+# so it can be re-run against the last capture; run `make fleet` first.
 .PHONY: capture
 capture:
-	@echo "TODO(joao): capture the bus on the HOST while the fleet runs."
-	@echo "  QEMU's mcast traffic goes through the host's loopback."
-	@echo "  See scripts/capture.sh"
-	@false
+	@echo
+	scripts/verify-capture.sh
 
 # -----------------------------------------------------------------------------
 .PHONY: stats
 stats:
-	@echo "TODO(joao): extract the request/response pairs from the capture and"
-	@echo "  compute count, mean, min, max and a percentile."
-	@echo "  HONEST LABEL: say whether it is round-trip or a one-way estimate."
-	@echo "  And say the bench runs in TCG (no /dev/kvm) — the number is biased."
-	@echo "  See scripts/analyze-capture.sh"
-	@false
+	@echo
+	scripts/analyze-capture.sh
 
 # -----------------------------------------------------------------------------
 $(BUILD):
@@ -165,7 +224,7 @@ $(BUILD):
 .PHONY: clean
 clean:
 	rm -rf $(BUILD)/student-app $(BUILD)/test-support $(BUILD)/test-stack \
-	       $(BUILD)/test-engine \
+	       $(BUILD)/test-protocol $(BUILD)/test-engine $(BUILD)/bus-tap \
 	       $(BUILD)/logs $(BUILD)/captures
 
 # Separate from clean because unpacking again costs 15 MB of I/O and clean runs
@@ -183,37 +242,70 @@ distclean: clean clean-vm
 # bench.
 .PHONY: doctor
 doctor:
-	@echo "== mandatory =="
+	@echo "== mandatory for the host tests =="
 	@for t in $(CXX) make file; do \
 	    printf '  %-22s ' "$$t"; command -v $$t || { echo MISSING; exit 1; }; \
 	done
-	@echo "== fleet and measurement =="
-	@for t in qemu-system-x86_64 cpio timeout dumpcap tshark; do \
-	    printf '  %-22s ' "$$t"; command -v $$t || echo "MISSING (image/fleet/capture/stats)"; \
+	@echo "== mandatory for the fleet =="
+	@for t in qemu-system-x86_64 cpio timeout; do \
+	    printf '  %-22s ' "$$t"; command -v $$t || echo "MISSING (image/fleet)"; \
 	done
-	@printf '  %-22s ' setcap; command -v setcap || ls /usr/sbin/setcap 2>/dev/null || echo "MISSING (test-engine level 1)"
+	@echo "== optional — 'make' is complete without every line below =="
+	@printf '  %-22s ' dumpcap; command -v dumpcap \
+	    || echo "absent (secondary recorder only; build/bus-tap is the one make uses)"
+	@printf '  %-22s ' tshark;  command -v tshark \
+	    || echo "absent (only needed to read a dumpcap .pcapng)"
+	@printf '  %-22s ' setcap;  command -v setcap || ls /usr/sbin/setcap 2>/dev/null \
+	    || echo "absent (test-engine level 1 runs in the VMs instead)"
+	@echo "== privileges =="
+	@echo "  none required. 'make' never calls sudo and never prompts."
+	@printf '  %-22s ' "test-engine level 1"; \
+	    ($(GETCAP) $(BUILD)/test-engine 2>/dev/null | grep -q cap_net_raw \
+	      && echo "on the host (file capability present)") \
+	    || (unshare -Urn true 2>/dev/null && echo "on the host (user namespace available)") \
+	    || echo "inside the VMs only — see 'make caps' to add it here too"
 	@echo "== bench =="
 	@test -e /dev/kvm && echo "  /dev/kvm               present" \
 	    || echo "  /dev/kvm               ABSENT — QEMU in TCG, the latency is biased by emulation"
-	@printf '  bus                    %s -> ' "$(SO2_MCAST)"; \
-	    ip route get $(firstword $(subst :, ,$(SO2_MCAST))) 2>/dev/null | head -1 || echo "no route"
-	@echo "     (if it does not say 'dev lo', a capture on lo comes back empty:"
-	@echo "      sudo ip route add $(firstword $(subst :, ,$(SO2_MCAST)))/32 dev lo)"
+	@printf '  %-22s %s\n' "bus" "$(SO2_MCAST) pinned to 127.0.0.1 by QEMU localaddr="
+	@echo "     (the tap joins the group on the same address, so no route is needed;"
+	@echo "      'make bus-local' is the fallback for a QEMU too old for localaddr)"
 
 .PHONY: help
 help:
+	@echo "make               == make check, the whole evaluation"
+	@echo "make check         compile, test, boot the fleet, capture, measure"
+	@echo
 	@echo "make app           build the VM's static binary"
-	@echo "make test-support  test the support classes (must pass today)"
+	@echo "make all           build + the host tests only (no VMs)"
+	@echo "make test-support  test the support classes"
 	@echo "make test-stack    test the stack (Observer, pool, marshalling)"
-	@echo "make test-engine   test the Engine (level 1 needs CAP_NET_RAW)"
+	@echo "make test-protocol test Protocol + Communicator over a loopback Engine"
+	@echo "make test-engine   test the Engine (level 1 uses whatever privilege it can get)"
 	@echo "                   RX error proof: sudo scripts/test-engine-veth.sh"
+	@echo "make tap           build the unprivileged bus recorder"
+	@echo "make caps          OPTIONAL: grant test-engine CAP_NET_RAW on the host"
+	@echo "                   (needs sudo, once per relink; make is complete without it)"
 	@echo "make starter       unpack vendor/ into build/vm/"
 	@echo "make doctor        check the bench tools"
-	@echo "make image         inject into the initramfs      [TODO]"
-	@echo "make fleet         bring up the 5 VMs             [TODO]"
-	@echo "make capture       capture the bus                [TODO]"
-	@echo "make stats         compute the latency            [TODO]"
-	@echo "make check         the whole evaluation           [TODO]"
+	@echo "make image         inject the binary into the initramfs"
+	@echo "make fleet         boot the vehicles and check their verdicts"
+	@echo "make capture       prove the frame layout from the last capture"
+	@echo "make stats         compute the latency from the last capture"
+	@echo "make bus-local     fallback for a QEMU too old for localaddr= (needs sudo)"
 	@echo "make clean         delete binaries and logs"
 	@echo "make clean-vm      delete the VM working copy"
 	@echo "make distclean     delete the whole build/"
+	@echo
+	@echo "useful variables:"
+	@echo "  VMS=\"1 2\"       a smaller fleet while debugging"
+	@echo "  VM_TIMEOUT=60    per-VM ceiling"
+	@echo "  SO2_MCAST=...    the group's bus"
+
+# The fleet pins the bus to loopback by passing QEMU localaddr=127.0.0.1, which
+# needs no privileges.  This target is the fallback for a QEMU too old for that
+# option: it does the same thing with a route, and needs sudo.
+.PHONY: bus-local
+bus-local:
+	sudo ip route add $(firstword $(subst :, ,$(SO2_MCAST)))/32 dev lo
+	@echo "  ok: $(SO2_MCAST) pinned to lo (disappears on reboot)"

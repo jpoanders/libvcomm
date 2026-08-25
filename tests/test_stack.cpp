@@ -1,16 +1,3 @@
-// =============================================================================
-// Tests for the STACK — the ones you are going to make pass.
-//
-// Run with `make test-stack`.  THEY FAIL TODAY, and they are meant to: each
-// CHECK here is a piece of the contract that is still a TODO.  Implement in the
-// order the tests appear and use the green as your stopwatch.
-//
-// These tests do not open a raw socket (they run on the host, without
-// CAP_NET_RAW).  They exercise what does NOT depend on the kernel: Observer,
-// the buffer pool, marshalling.  The proof that frames really travel is the
-// five-VM fleet, not this.
-// =============================================================================
-
 #include "check.h"
 #include "libvcomm.h"
 
@@ -96,17 +83,23 @@ int main()
             nic.free(first);
         }
 
-        // Exhaustion: the pool has BUFFER_SIZE slots and not one more.  When it
-        // runs out, alloc() returns 0 — and returning 0 is correct behaviour.
-        Vehicle_NIC::Buffer * all[Vehicle_NIC::BUFFER_SIZE];
+        // Exhaustion: alloc() draws from the TX HALF only — [0, SEND_BUFFERS)
+        // — because the pool is partitioned so a transmission burst cannot
+        // starve reception (§2.6 of doc/design-decisions.md).  When that half
+        // runs out, alloc() returns 0, and returning 0 is correct behaviour.
+        //
+        // The mirror case — the RX half filling up without alloc() being
+        // affected — needs handle() to be driven, which needs an Engine.  It
+        // lives in test-protocol, over the loopback Engine.
+        Vehicle_NIC::Buffer * all[Traits<Ethernet>::SEND_BUFFERS];
         unsigned int got = 0;
-        for (unsigned int i = 0; i < Vehicle_NIC::BUFFER_SIZE; i++) {
+        for (unsigned int i = 0; i < Traits<Ethernet>::SEND_BUFFERS; i++) {
             all[i] = nic.alloc(Ethernet::BROADCAST,
                                Traits<Ethernet>::PROTOCOL_NUMBER, 8);
             if (all[i])
                 got++;
         }
-        CHECK(got == Vehicle_NIC::BUFFER_SIZE);
+        CHECK(got == Traits<Ethernet>::SEND_BUFFERS);
         CHECK(nic.alloc(Ethernet::BROADCAST, Traits<Ethernet>::PROTOCOL_NUMBER,
                         8) == 0);
 
