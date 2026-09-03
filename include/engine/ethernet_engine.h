@@ -1,21 +1,21 @@
-#ifndef LIBVCOMM_RAW_SOCKET_ENGINE_H
-#define LIBVCOMM_RAW_SOCKET_ENGINE_H
+#ifndef LIBVCOMM_ETHERNET_ENGINE_H
+#define LIBVCOMM_ETHERNET_ENGINE_H
 
 #include <csignal>
 #include "../ethernet.h"
 
-class Raw_Socket_Engine
+class EthernetEngine
 {
 protected:
     typedef Ethernet::Address Address;
     typedef Ethernet::Protocol Protocol;
 
-    Raw_Socket_Engine(const char * iface, Protocol prot);
+    EthernetEngine(const char * iface, Protocol prot);
 
-    virtual ~Raw_Socket_Engine();
+    virtual ~EthernetEngine();
 
-    Raw_Socket_Engine(const Raw_Socket_Engine &) = delete;
-    Raw_Socket_Engine & operator=(const Raw_Socket_Engine &) = delete;
+    EthernetEngine(const EthernetEngine &) = delete;
+    EthernetEngine & operator=(const EthernetEngine &) = delete;
 
     int engine_send(const Ethernet::Frame * frame, unsigned int size);
 
@@ -36,9 +36,8 @@ protected:
     virtual void handle(Ethernet::Frame * frame, unsigned int size) = 0;
 
 private:
-
     static void signal_handler(int signo);
-    static Raw_Socket_Engine * _instance;
+    static EthernetEngine * _instance;
 
     void drain();
 
@@ -49,7 +48,6 @@ private:
     volatile sig_atomic_t _armed; // has engine_start() run?
     volatile sig_atomic_t _rx_error;
     volatile sig_atomic_t _rx_errors;
-
 };
 
 #endif // LIBVCOMM_RAW_SOCKET_ENGINE_H
