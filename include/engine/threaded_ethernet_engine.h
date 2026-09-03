@@ -1,8 +1,11 @@
 #ifndef LIBVCOMM_THREADED_ETHERNET_ENGINE_H
 #define LIBVCOMM_THREADED_ETHERNET_ENGINE_H
 
+#include <atomic>
 #include <csignal>
-#include "../ethernet.h"
+#include <semaphore.h>
+#include <thread>
+#include "../net/ethernet.h"
 #include "engine.h"
 
 class ThreadedEthernetEngine : public Engine
@@ -10,34 +13,37 @@ class ThreadedEthernetEngine : public Engine
 public:
     ThreadedEthernetEngine(const char * iface, Ethernet::Protocol prot);
 
-    ~ThreadedEthernetEngine() = default;
+    ~ThreadedEthernetEngine();
 
-    // ThreadedEthernetEngine(const ThreadedEthernetEngine &) = delete;
-    // ThreadedEthernetEngine & operator=(const ThreadedEthernetEngine &) =
-    // delete;
+    ThreadedEthernetEngine(const ThreadedEthernetEngine &) = delete;
 
-    int send(const void * frame, unsigned int size) override;
+    ThreadedEthernetEngine & operator=(const ThreadedEthernetEngine &) = delete;
+
+    bool start();
+
+    void stop();
+
+    int send(const void * data, unsigned int size) override;
 
     const Ethernet::Address & address() const { return _address; }
 
     bool valid() const { return _sockfd >= 0; }
 
-    unsigned int rx_errors() const
-    {
-        return static_cast<unsigned int>(_rx_errors);
-    }
-    int rx_error() const { return static_cast<int>(_rx_error); }
-
 private:
-    static void signal_handler();
+    static void signal_handler(int);
+
+    void receive_loop();
 
     int _sockfd;                  // -1 while invalid
     unsigned int _ifindex;        // if_nametoindex("eth0")
     Ethernet::Address _address;   // eth0's real MAC (SIOCGIFHWADDR)
     Ethernet::Protocol _protocol; // EtherType, in HOST order
-    volatile sig_atomic_t _armed; // has engine_start() run?
-    volatile sig_atomic_t _rx_error;
-    volatile sig_atomic_t _rx_errors;
+    std::thread _receiver;
+    std::atomic<bool> _armed;
+
+    // this currently limits each process to have only ONE instance of this
+    // class
+    static sem_t _sem;
 };
 
 #endif // LIBVCOMM_RAW_SOCKET_ENGINE_H

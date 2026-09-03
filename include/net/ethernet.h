@@ -21,7 +21,6 @@ public:
         };
 
         Address() { std::memset(_addr, 0, sizeof(_addr)); }
-
         Address(const Null &) { std::memset(_addr, 0, sizeof(_addr)); }
 
         Address(unsigned char a0, unsigned char a1, unsigned char a2,
@@ -88,7 +87,8 @@ public:
         unsigned int tx_bytes;
         unsigned int rx_packets;
         unsigned int rx_bytes;
-        unsigned int rx_dropped; // frame arrived but there was no buffer
+        unsigned int
+            rx_dropped; // frame arrived but there was no buffer / observer
     };
 };
 
@@ -111,4 +111,5 @@ inline char * Ethernet::Address::to_string(char * buf) const
     buf[17] = '\0';
     return buf;
 }
+
 #endif // LIBVCOMM_ETHERNET_H
