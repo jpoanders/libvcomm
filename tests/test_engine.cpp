@@ -19,15 +19,7 @@ namespace {
 
 const unsigned short PROT = Traits<Ethernet>::PROTOCOL_NUMBER;
 
-// -----------------------------------------------------------------------------
-// Counting SIGNALS, which is a different thing from counting frames.
-//
-// The Engine's handler is private and cannot be instrumented from the inside.
-// What can be done is CHAINING: after the Engine's constructor has installed the
-// SIGIO disposition, the test reads that disposition with sigaction(NULL, &cur),
-// keeps the pointer, and installs a handler of its own that counts and forwards.
-// The library does not change a single line.
-// -----------------------------------------------------------------------------
+// signal counter chains on top of the engine SIGIO handler
 volatile sig_atomic_t g_signals = 0;
 void (*g_engine_handler)(int) = 0;
 
@@ -38,11 +30,7 @@ extern "C" void counting_handler(int signo)
         g_engine_handler(signo);
 }
 
-// -----------------------------------------------------------------------------
-// The probe.  Raw_Socket_Engine is not instantiable: everything is protected and
-// handle() is pure virtual.  Every Engine test goes through a derived class like
-// this one.
-// -----------------------------------------------------------------------------
+// concrete engine subclass for testing
 class Probe : public Raw_Socket_Engine
 {
 public:
@@ -60,14 +48,11 @@ public:
     using Raw_Socket_Engine::engine_stop;
     using Raw_Socket_Engine::engine_valid;
 
-    volatile sig_atomic_t frames;   // how many times handle() was called
-    volatile sig_atomic_t oversize; // frame larger than the probe's buffer
+    volatile sig_atomic_t frames;
+    volatile sig_atomic_t oversize;
     unsigned char last[Ethernet::HEADER_SIZE + 64];
 
 protected:
-    // RUNS INSIDE THE SIGNAL HANDLER.  No printf, no allocation: only
-    // sig_atomic_t and memcpy.  If this function were hard to write under that
-    // rule, the problem would be in the contract, not in the test.
     void handle(Ethernet::Frame * frame, unsigned int size) override
     {
         frames = frames + 1;
@@ -78,7 +63,6 @@ protected:
     }
 };
 
-// An environment variable is on when it exists, is non-empty and is not "0".
 bool enabled(const char * name)
 {
     const char * v = std::getenv(name);
@@ -94,9 +78,7 @@ bool has_cap_net_raw()
     return true;
 }
 
-// The MAC through the sysfs path — independent of the SIOCGIFHWADDR the Engine
-// uses.  Comparing the results of two paths is worth more than comparing against
-// a constant.
+// reads MAC via sysfs
 bool mac_from_sysfs(const char * iface, unsigned char out[6])
 {
     char path[128];
@@ -118,26 +100,17 @@ bool mac_from_sysfs(const char * iface, unsigned char out[6])
 void build_frame(Ethernet::Frame * f, const Ethernet::Address & src,
                  unsigned int payload)
 {
-    // No memset() here: Ethernet::Frame is NOT trivially-constructible
-    // (Ethernet::Address has a constructor), and g++ warns with
-    // -Wclass-memaccess.  Value-initializing the aggregate zeroes everything
-    // through the proper path — the same reason a `static Ethernet::Frame`
-    // inside drain() would generate an initialization guard.
+    // value-init instead of memset
     *f = Ethernet::Frame{};
     f->dst = Ethernet::BROADCAST;
     f->src = src;
-    f->prot = htons(PROT); // host order inside the lib, network order on the wire
+    f->prot = htons(PROT);
     for (unsigned int i = 0; i < payload; i++)
         f->data[i] = static_cast<unsigned char>(i + 1);
 }
 
 // =============================================================================
-// LEVEL 0 — no privileges.
-//
-// The interface does not exist, so the constructor fails WITH or WITHOUT
-// CAP_NET_RAW (without privileges it does not even reach if_nametoindex:
-// socket() already returns EPERM).  The test is identical on both machines,
-// which is what you want from a test.
+// Level 0: failure path (no privileges required)
 // =============================================================================
 void level_0()
 {
@@ -149,24 +122,21 @@ void level_0()
     CHECK(bad.engine_start() == false);
     CHECK(bad.engine_rx_errors() == 0);
 
-    // Idempotence over an invalid Engine.  It is engine_stop()'s guard that
-    // prevents an fcntl(-1, ...) here — without it this silently dirties errno.
+    // stop() must be idempotent on an invalid engine.
     bad.engine_stop();
     bad.engine_stop();
     CHECK(bad.engine_start() == false);
 
-    // Destructor over an invalid Engine: construct and die within the scope.  If
-    // the destructor called close(-1) or fcntl(-1, ...) without a guard, this is
-    // where it would show up.
+    // Destructor on an invalid engine must not crash.
     {
         Probe tmp("vcomm-nothing", PROT);
         CHECK(tmp.engine_valid() == false);
     }
-    CHECK(true); // getting this far == the destructor did not take the process down
+    CHECK(true); // reached here = destructor safe
 }
 
 // =============================================================================
-// LEVEL 1 — a real socket.  Needs CAP_NET_RAW.
+// Level 1: real socket (requires CAP_NET_RAW)
 // =============================================================================
 void level_1(const char * iface)
 {
@@ -175,26 +145,25 @@ void level_1(const char * iface)
     Probe p(iface, PROT);
     CHECK(p.engine_valid() == true);
     if (!p.engine_valid()) {
-        std::printf("  (without a valid Engine, the rest of level 1 makes no "
-                    "sense)\n");
+        std::printf("  (invalid Engine, skipping level 1)\n");
         return;
     }
 
-    // ---- constructor: the MAC came from the kernel, not from a constant -----
+    // ---- MAC: cross-check with sysfs ----------------------------------------
     unsigned char sysfs[6];
     if (mac_from_sysfs(iface, sysfs))
         CHECK(std::memcmp(p.engine_address().bytes(), sysfs, 6) == 0);
     else
-        std::printf("  (sysfs unavailable; MAC comparison skipped)\n");
+        std::printf("  (sysfs unavailable; MAC check skipped)\n");
 
-    // ---- the constructor installed the SIGIO disposition --------------------
+    // ---- SIGIO disposition --------------------------------------------------
     struct sigaction cur;
     std::memset(&cur, 0, sizeof(cur));
     CHECK(::sigaction(SIGIO, NULL, &cur) == 0);
-    CHECK(cur.sa_handler != SIG_DFL); // SIGIO's default action is to KILL the process
-    CHECK((cur.sa_flags & SA_RESTART) == 0); // design decision: no SA_RESTART
+    CHECK(cur.sa_handler != SIG_DFL);
+    CHECK((cur.sa_flags & SA_RESTART) == 0); // intentionally no SA_RESTART
 
-    // Chains the signal counter on top of the Engine's handler.
+    // Chain signal counter on top of the Engine's handler.
     g_engine_handler = cur.sa_handler;
     struct sigaction mine = cur;
     mine.sa_handler = counting_handler;
@@ -211,23 +180,22 @@ void level_1(const char * iface)
     sigemptyset(&just_sigio);
     sigaddset(&just_sigio, SIGIO);
 
-    // ---- round trip of ONE frame -------------------------------------------
+    // ---- Single frame roundtrip ----
     {
         CHECK(::sigprocmask(SIG_BLOCK, &just_sigio, &previous) == 0);
 
         int sent = p.engine_send(&f, SIZE);
         CHECK(sent == static_cast<int>(SIZE));
-        CHECK(p.frames == 0); // blocked: nothing has been delivered yet
+        CHECK(p.frames == 0); // blocked, not yet delivered
 
         CHECK(::sigprocmask(SIG_SETMASK, &previous, NULL) == 0);
 
-        // Exactly 1, not 2: the PACKET_OUTGOING copy was filtered in drain().
-        CHECK(p.frames == 1);
+        CHECK(p.frames == 1); // PACKET_OUTGOING filtered by drain
         CHECK(p.oversize == 0);
         CHECK(std::memcmp(p.last, &f, SIZE) == 0);
     }
 
-    // ---- coalescing: N frames, ONE signal -----------------------------------
+    // ---- Signal coalescing: N frames, one signal ----
     const int N = 50;
     {
         sig_atomic_t f0 = p.frames;
@@ -241,17 +209,14 @@ void level_1(const char * iface)
         CHECK(sent_count == N);
         CHECK(::sigprocmask(SIG_SETMASK, &previous, NULL) == 0);
 
-        // drain() emptied the whole queue from a single signal.  If frames < N,
-        // the loop is leaving early.  If signals > 1, the test did not prove
-        // coalescing (and then the broken thing is the test, not the Engine).
         CHECK(p.frames - f0 == N);
-        CHECK(g_signals - s0 == 1);
+        CHECK(g_signals - s0 == 1); // all N drained from one signal
         std::printf("     -> %d frames delivered by %d signal(s)\n",
                     static_cast<int>(p.frames - f0),
                     static_cast<int>(g_signals - s0));
     }
 
-    // ---- engine_stop(): stops signalling, does NOT discard ------------------
+    // ---- stop/re-arm: silences notification, preserves data ----
     {
         p.engine_stop();
         sig_atomic_t f1 = p.frames;
@@ -260,16 +225,13 @@ void level_1(const char * iface)
         for (int i = 0; i < N; i++)
             p.engine_send(&f, SIZE);
 
-        // Without O_ASYNC no signal is born, so handle() is not called.
-        CHECK(p.frames == f1);
+        CHECK(p.frames == f1); // no signal, no delivery
         CHECK(g_signals == s1);
 
         p.engine_stop(); // idempotent
         CHECK(p.frames == f1);
 
-        // The N frames are still in the kernel's queue.  Re-arming and sending
-        // one more makes drain() pull the N parked ones plus the new one: proof
-        // that stop silences the notification without losing data.
+        // drain pulls the n queued frames plus the new one
         CHECK(p.engine_start() == true);
         CHECK(::sigprocmask(SIG_BLOCK, &just_sigio, &previous) == 0);
         CHECK(p.engine_send(&f, SIZE) == static_cast<int>(SIZE));
@@ -277,18 +239,7 @@ void level_1(const char * iface)
         CHECK(p.frames - f1 == N + 1);
     }
 
-    // ---- error diagnostics --------------------------------------------------
-    //
-    // On a clean path the counter must stay put.  This does NOT prove drain()'s
-    // error arm works — it proves it does not fire on its own.
-    //
-    // The positive proof is manual, because bringing an interface down is not
-    // something a test suite does unless told to:
-    //
-    //   $ sudo ip link set <iface> down    # with the Engine armed
-    //   and engine_rx_errors() must go up.
-    //
-    // Do it on a veth, never on `lo` — bringing loopback down breaks the machine.
+    // rx error counter
     CHECK(p.engine_rx_errors() == 0);
     if (p.engine_rx_errors() != 0)
         std::printf("     -> last RX errno: %d (%s)\n", p.engine_rx_error(),
@@ -296,12 +247,14 @@ void level_1(const char * iface)
 
     p.engine_stop();
 
-    // Restores the SIGIO disposition, so as not to leak into another test.
+    // restore original SIGIO disposition.
     ::sigaction(SIGIO, &cur, NULL);
     g_engine_handler = 0;
 }
 
-
+// =============================================================================
+// Level 1-error: RX error detection (orchestrated by external veth script)
+// =============================================================================
 void level_error(const char * iface)
 {
     std::printf("\n== level 1-E: RX error on '%s' ==\n", iface);
@@ -314,16 +267,11 @@ void level_error(const char * iface)
     CHECK(p.engine_start() == true);
     CHECK(p.engine_rx_errors() == 0);
 
-    // Handshake with the script: only after this line does bringing the
-    // interface down test anything.  The fflush is mandatory — the output is
-    // redirected to a file, which makes stdout block-buffered.
+    // Synchronization point for the orchestration script
     std::printf("READY-FOR-ERROR\n");
     std::fflush(stdout);
 
-    // Up to ~10 s waiting for the counter to rise.  nanosleep may return EINTR
-    // on every signal that arrives: the Engine installs the handler WITHOUT
-    // SA_RESTART, on purpose.  It does not hurt here — the loop just tries
-    // again.
+    // poll for up to 10s. nanosleep may return EINTR (no SA_RESTART)
     for (int i = 0; i < 1000 && p.engine_rx_errors() == 0; i++) {
         struct timespec ts;
         ts.tv_sec = 0;
@@ -350,7 +298,6 @@ int main()
     const char * env_iface = std::getenv("VCOMM_TEST_IFACE");
     const char * iface = env_iface ? env_iface : "lo";
 
-    // VCOMM_ERROR_TEST=1  -> level 1-E only, orchestrated by the veth script.
     if (enabled("VCOMM_ERROR_TEST")) {
         if (!has_cap_net_raw()) {
             ::test::report(false, "CAP_NET_RAW (VCOMM_ERROR_TEST requires it)",
@@ -366,14 +313,10 @@ int main()
     if (has_cap_net_raw()) {
         level_1(iface);
     } else {
-        std::printf("\n== level 1: SKIPPED — no CAP_NET_RAW ==\n");
+        std::printf("\n== level 1: SKIPPED (no CAP_NET_RAW) ==\n");
         std::printf("   $ sudo setcap cap_net_raw+ep build/test-engine\n");
-        std::printf("   (setcap lives on the inode: REPEAT it after every "
-                    "relink)\n");
+        std::printf("   (repeat after every relink)\n");
 
-        // VCOMM_REQUIRE_RAW=1 turns the skip into a failure.  It is what `make
-        // check` uses: the evaluation target must not go green having skipped
-        // the only test that exercises a real socket.
         if (enabled("VCOMM_REQUIRE_RAW"))
             ::test::report(false,
                            "level 1 executed (VCOMM_REQUIRE_RAW=1 requires it)",

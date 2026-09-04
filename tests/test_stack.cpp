@@ -1,9 +1,19 @@
 #include "check.h"
-#include "libvcomm.h"
+
+#include "loopback_engine.h"
+
+#include "traits.h"
+#include "ethernet.h"
+#include "buffer.h"
+#include "observer.h"
+#include "message.h"
+#include "nic.h"
 
 namespace {
 
-// A fake observer, to test Observed without bringing up the whole stack.
+typedef NIC<Loopback_Engine> Test_NIC;
+
+// Minimal observer for testing dispatch without the full stack.
 class Spy : public Conditional_Data_Observer<int, int>
 {
 public:
@@ -27,8 +37,7 @@ int main()
     std::printf("== stack ==\n");
 
     // -------------------------------------------------------------------------
-    // 1. Conditionally_Data_Observed — attach / notify / detach.
-    //    Start here: it is what unblocks NIC and Protocol.
+    // 1. Conditionally_Data_Observed: attach, notify, detach
     // -------------------------------------------------------------------------
     {
         Conditionally_Data_Observed<int, int> observed;
@@ -40,19 +49,17 @@ int main()
 
         CHECK(observed.notify(10, &payload) == true);
         CHECK(s1.calls == 1);
-        CHECK(s2.calls == 0); // different condition: NOT notified
+        CHECK(s2.calls == 0); // condition mismatch, not notified
         CHECK(s1.last == 42);
 
-        CHECK(observed.notify(99, &payload) == false); // nobody listens to 99
+        CHECK(observed.notify(99, &payload) == false); // no listener
         observed.detach(&s1, 10);
-        CHECK(observed.notify(10, &payload) ==
-              false); // after the detach, silence
+        CHECK(observed.notify(10, &payload) == false); // detached, silent
         CHECK(s1.calls == 1);
     }
 
     // -------------------------------------------------------------------------
-    // 2. Concurrent_Observed — already implemented (transcribed from the PDF).
-    //    Must pass TODAY.  If it fails, the regression is yours.
+    // 2. Concurrent_Observed: semaphore-based observer
     // -------------------------------------------------------------------------
     {
         Concurrent_Observed<int, int> observed;
@@ -62,18 +69,18 @@ int main()
         observed.attach(&obs, 5);
         CHECK(obs.rank() == 5);
         CHECK(observed.notify(5, &payload) == true);
-        CHECK(obs.updated() == &payload); // does not block: the v() already
-                                          // happened
+        CHECK(obs.updated() == &payload); // non-blocking: v() already called
         CHECK(observed.notify(6, &payload) == false);
     }
 
     // -------------------------------------------------------------------------
-    // 3. NIC — buffer pool.  No socket needed to test it.
+    // 3. NIC buffer pool (engine-independent, uses Loopback_Engine)
     // -------------------------------------------------------------------------
     {
-        Vehicle_NIC nic;
+        Loopback_Engine::reset();
+        Test_NIC nic;
 
-        Vehicle_NIC::Buffer * first = nic.alloc(
+        Test_NIC::Buffer * first = nic.alloc(
             Ethernet::BROADCAST, Traits<Ethernet>::PROTOCOL_NUMBER, 64);
         CHECK(first != 0);
 
@@ -83,15 +90,9 @@ int main()
             nic.free(first);
         }
 
-        // Exhaustion: alloc() draws from the TX HALF only — [0, SEND_BUFFERS)
-        // — because the pool is partitioned so a transmission burst cannot
-        // starve reception (§2.6 of doc/design-decisions.md).  When that half
-        // runs out, alloc() returns 0, and returning 0 is correct behaviour.
-        //
-        // The mirror case — the RX half filling up without alloc() being
-        // affected — needs handle() to be driven, which needs an Engine.  It
-        // lives in test-protocol, over the loopback Engine.
-        Vehicle_NIC::Buffer * all[Traits<Ethernet>::SEND_BUFFERS];
+        // Exhaust the TX half. alloc() only draws from [0, SEND_BUFFERS),
+        // so RX is never starved by a TX burst.
+        Test_NIC::Buffer * all[Traits<Ethernet>::SEND_BUFFERS];
         unsigned int got = 0;
         for (unsigned int i = 0; i < Traits<Ethernet>::SEND_BUFFERS; i++) {
             all[i] = nic.alloc(Ethernet::BROADCAST,
@@ -106,24 +107,23 @@ int main()
         for (unsigned int i = 0; i < got; i++)
             nic.free(all[i]);
 
-        // After giving everything back, the pool returns to the start.  This
-        // CHECK is what catches a buffer leak — the bug that only shows up in
-        // the demo.
-        Vehicle_NIC::Buffer * again = nic.alloc(
+        // Pool fully recovered after freeing everything.
+        Test_NIC::Buffer * again = nic.alloc(
             Ethernet::BROADCAST, Traits<Ethernet>::PROTOCOL_NUMBER, 8);
         CHECK(again != 0);
         nic.free(again);
     }
 
     // -------------------------------------------------------------------------
-    // 4. Marshalling — roundtrip through alloc() + unmarshal().
+    // 4. Marshalling: alloc() + unmarshal() roundtrip
     // -------------------------------------------------------------------------
     {
-        Vehicle_NIC nic;
+        Loopback_Engine::reset();
+        Test_NIC nic;
         const unsigned char payload[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
         Ethernet::Address dst = Ethernet::BROADCAST;
 
-        Vehicle_NIC::Buffer * buf = nic.alloc(
+        Test_NIC::Buffer * buf = nic.alloc(
             dst, Traits<Ethernet>::PROTOCOL_NUMBER, sizeof(payload));
         CHECK(buf != 0);
 

@@ -4,25 +4,6 @@
 #include <cstring>
 #include "ethernet.h"
 
-// =============================================================================
-// Loopback_Engine — an Engine for TESTS ONLY.  No socket, no privileges, no
-// kernel.  engine_send() hands the frame straight back to handle().
-//
-// This is the class that proves the Engine abstraction is real: NIC, Protocol
-// and Communicator compile against it without one line changing, which is the
-// same promise Stage 2's Shared_Memory_Engine will cash in.  If some syscall
-// ever leaks out of Raw_Socket_Engine, THIS FILE STOPS COMPILING — which makes
-// it a regression test for the layering, not just a fixture.
-//
-// The delivery is SYNCHRONOUS and re-entrant: handle() runs inside
-// engine_send(), while NIC::send() still holds the transmit buffer.  That is
-// deliberate — it is the same re-entrancy the real Engine gets when SIGIO
-// interrupts a thread in the middle of sendto().
-//
-// The knobs are STATIC because NIC inherits its Engine PRIVATELY: a test
-// holding a NIC has no way to reach an instance member of the Engine
-// underneath.  Process-global switches are the way in.
-// =============================================================================
 
 class Loopback_Engine
 {
@@ -60,10 +41,7 @@ protected:
         sent++;
 
         if (_armed && deliver) {
-            // A COPY, because the real Engine hands up a frame that lives in
-            // its own memory and is valid only for the duration of the call.
-            // Passing the caller's buffer straight through would let a bug that
-            // depends on that distinction pass unnoticed here.
+            // copy
             Ethernet::Frame copy;
             std::memcpy(&copy, frame, size);
             handle(&copy, size);

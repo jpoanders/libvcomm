@@ -12,7 +12,7 @@ int main()
 {
     std::printf("== support ==\n");
 
-    // --- Ethernet: the wire layout -------------------------------------------
+    // --- Ethernet wire layout ------------------------------------------------
     CHECK(sizeof(Ethernet::Header) == 14);
     CHECK(sizeof(Ethernet::Address) == 6);
     CHECK(Ethernet::MTU == 1500);
@@ -30,42 +30,40 @@ int main()
     char buf[18];
     CHECK(std::strcmp(a.to_string(buf), "02:00:00:00:00:01") == 0);
 
-    // --- Buffer: exclusive ownership -----------------------------------------
+    // --- Buffer: mutual exclusion --------------------------------------------
     Buffer<Ethernet::Frame> bf;
     CHECK(bf.in_use() == false);
     CHECK(bf.lock() == true);
-    CHECK(bf.lock() == false);  // the second attempt fails: that is what
-    CHECK(bf.in_use() == true); // stops two threads taking the same one
+    CHECK(bf.lock() == false);  // second lock must fail
+    CHECK(bf.in_use() == true);
     bf.unlock();
-    CHECK(bf.lock() == true);
+    CHECK(bf.lock() == true);   // reusable after unlock
     bf.unlock();
 
-    // --- List: FIFO ----------------------------------------------------------
+    // --- List: FIFO order ----------------------------------------------------
     List<int> list;
     int v1 = 1, v2 = 2;
     CHECK(list.empty());
     list.insert(&v1);
     list.insert(&v2);
     CHECK(list.size() == 2);
-    CHECK(list.remove() == &v1); // FIFO, not LIFO
+    CHECK(list.remove() == &v1); // FIFO
     CHECK(list.remove() == &v2);
-    CHECK(list.remove() == 0); // empty returns 0, does not blow up
+    CHECK(list.remove() == 0);   // empty -> null, no crash
 
-    // --- Semaphore: decoupling in time ---------------------------------------
+    // --- Semaphore -----------------------------------------------------------
     Semaphore sem(0);
     CHECK(sem.try_p() == false);
     sem.v();
     CHECK(sem.try_p() == true);
 
-    // A v() that happens BEFORE the p() is not lost — that is the difference
-    // between a semaphore and a rendezvous, and it is why reception does not
-    // need to be in sync with the application.
+    // v() before p() must not be lost (counting, not rendezvous).
     Semaphore early(0);
     early.v();
-    early.p(); // does not block: the counter was already 1
-    CHECK(true);
+    early.p();
+    CHECK(early.try_p() == false); // counter consumed, back to 0
 
-    // And a p() that arrives first really does sleep until the v().
+    // p() blocks until the v() from another thread.
     Semaphore late(0);
     bool woke = false;
     std::thread waker([&]() {
@@ -74,7 +72,7 @@ int main()
         late.v();
     });
     late.p();
-    CHECK(woke == true); // only passes if p() genuinely waited
+    CHECK(woke == true);
     waker.join();
 
     // --- Message -------------------------------------------------------------
@@ -84,13 +82,12 @@ int main()
     m.set(hello, 3);
     CHECK(m.size() == 3);
     CHECK(std::memcmp(m.data(), hello, 3) == 0);
-    // Truncation: a source LARGER than MAX_SIZE.  The source has to really
-    // exist — asking to copy more bytes than the source array holds is an
-    // out-of-bounds read, even if the destination truncates.
+
+    // Overflow: set() must truncate, not overrun.
     unsigned char big[Message::MAX_SIZE + 100];
     std::memset(big, 0xAB, sizeof(big));
     m.set(big, sizeof(big));
-    CHECK(m.size() == Message::MAX_SIZE); // truncates, does not overflow
+    CHECK(m.size() == Message::MAX_SIZE);
     CHECK(static_cast<unsigned char *>(m.data())[Message::MAX_SIZE - 1] ==
           0xAB);
 

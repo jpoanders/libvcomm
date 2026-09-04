@@ -33,8 +33,7 @@ int main()
     std::printf("== protocol + communicator ==\n");
 
     // -------------------------------------------------------------------------
-    // 1. A message reaches the Communicator on ITS port, and only that one.
-    //    This is the regression test for the broadcast-to-port-0 defect.
+    // 1. Port-selective delivery (regression for broadcast-to-port-0 defect)
     // -------------------------------------------------------------------------
     {
         Loopback_Engine::reset();
@@ -51,12 +50,11 @@ int main()
         CHECK(Loopback_Engine::sent == 1);
 
         Message in;
-        CHECK(a.receive(&in, 200) == true); // <<< false before the fix
+        CHECK(a.receive(&in, 200) == true);
         CHECK(in.size() == sizeof(hello));
         CHECK(std::memcmp(in.data(), hello, sizeof(hello)) == 0);
 
-        // The other port heard nothing.  Without this check, "deliver to
-        // everybody" would pass section 1 just as well as the correct fix.
+        // Port B must not receive what was sent to port A.
         Message none;
         CHECK(b.receive(&none, 50) == false);
 
@@ -66,11 +64,7 @@ int main()
     }
 
     // -------------------------------------------------------------------------
-    // 2. Ownership: a full send -> receive round trip returns every buffer it
-    //    borrowed.  Run it well past the size of the pool — a leak of one
-    //    buffer per message shows up as a failure on the BUFFER_SIZE-th
-    //    iteration, which is exactly the bug that would otherwise wait for the
-    //    demo.
+    // 2. Buffer ownership: send+receive must return every buffer
     // -------------------------------------------------------------------------
     {
         Loopback_Engine::reset();
@@ -98,11 +92,7 @@ int main()
     }
 
     // -------------------------------------------------------------------------
-    // 3. The pool partition (doc/design-decisions.md §2.6), mirror case.
-    //    Messages that are never received hold their RECEIVE half hostage.
-    //    Reception starts dropping — correctly, and counted — while
-    //    TRANSMISSION carries on untouched.  That separation is the whole
-    //    reason the pool was split.
+    // 3. Pool partition: rx exhaustion must not affect tx
     // -------------------------------------------------------------------------
     {
         Loopback_Engine::reset();
@@ -116,16 +106,17 @@ int main()
         const unsigned int excess = 4;
         for (unsigned int i = 0; i < Traits<Ethernet>::RECEIVE_BUFFERS + excess;
              i++)
-            a.send(&out); // deliberately never received
+            a.send(&out); // never received
 
         CHECK(nic.statistics().rx_dropped == excess);
 
+        // tx half unaffected
         Test_NIC::Buffer * tx =
             nic.alloc(Ethernet::BROADCAST, PROT, sizeof(payload));
-        CHECK(tx != 0); // the transmit half was never at risk
+        CHECK(tx != 0);
         nic.free(tx);
 
-        // And everything the RX half did hold is still there to be taken.
+        // drain everything the tx half held
         Message in;
         unsigned int drained = 0;
         while (a.receive(&in, 0))
@@ -134,10 +125,7 @@ int main()
     }
 
     // -------------------------------------------------------------------------
-    // 4. A lying length field in the header is clamped to what actually
-    //    arrived.  The packet is assembled by hand because Protocol::send()
-    //    would never produce this frame — the point is that a REMOTE sender
-    //    can, and nothing on the wire is trustworthy.
+    // 4. Malformed length field: clamped to actual bytes received.
     // -------------------------------------------------------------------------
     {
         Loopback_Engine::reset();
@@ -156,7 +144,7 @@ int main()
                 reinterpret_cast<Test_Protocol::Packet *>(buf->frame()->data);
             pkt->_from_port = 7;
             pkt->_to_port = PORT_A;
-            pkt->_length = 60000; // <<< the lie
+            pkt->_length = 60000; // forged
             std::memcpy(pkt->data<void>(), "abcd", DATA);
 
             nic.send(buf);
@@ -169,10 +157,7 @@ int main()
     }
 
     // -------------------------------------------------------------------------
-    // 5. A full queue is REPORTED, not swallowed (decision 1.11).  notify()
-    //    returning false is what tells the layer above that nobody took the
-    //    data and the buffer has to go back — without it the message was lost
-    //    AND the buffer leaked.
+    // 5. Full observer queue: notify() returns false, caller reclaims buffer.
     // -------------------------------------------------------------------------
     {
         Concurrent_Observed<int, int> observed;
@@ -189,9 +174,34 @@ int main()
         CHECK(accepted == List<int>::CAPACITY);
         CHECK(observed.notify(1, &payload) == false);
 
-        // Take one out and the next insert fits again.
+        // Consuming one frees a slot for the next insert.
         CHECK(obs.updated() == &payload);
         CHECK(observed.notify(1, &payload) == true);
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. Cross-communicator delivery: A sends to B, B receives, A does not
+    // -------------------------------------------------------------------------
+    {
+        Loopback_Engine::reset();
+        Test_NIC nic;
+        Test_Protocol proto(&nic);
+        Test_Communicator a(&proto, addr_of(nic, PORT_A));
+        Test_Communicator b(&proto, addr_of(nic, PORT_B));
+
+        const char payload[] = "cross";
+
+        CHECK(proto.send(addr_of(nic, PORT_A), addr_of(nic, PORT_B),
+                         payload, sizeof(payload)) > 0);
+
+        Message in;
+        CHECK(b.receive(&in, 200) == true);
+        CHECK(in.size() == sizeof(payload));
+        CHECK(std::memcmp(in.data(), payload, sizeof(payload)) == 0);
+
+        // A must not receive what was addressed to B.
+        Message none;
+        CHECK(a.receive(&none, 50) == false);
     }
 
     return ::test::summary("protocol");

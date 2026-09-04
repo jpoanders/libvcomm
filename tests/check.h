@@ -4,8 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
-// Mini test framework: no external dependencies, compiles statically, runs in
-// 128 MB of RAM inside the VM.  Enough for Practical Class 1.
+// mini test framework: no external dependencies, compiles statically
 
 namespace test {
 
