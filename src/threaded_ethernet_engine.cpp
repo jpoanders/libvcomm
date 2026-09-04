@@ -1,5 +1,6 @@
 #include "../include/engine/threaded_ethernet_engine.h"
 
+#include <atomic>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
@@ -14,7 +15,7 @@
 ThreadedEthernetEngine::ThreadedEthernetEngine(const char * iface,
                                                Ethernet::Protocol prot)
     : _sockfd(-1), _ifindex(0), _address(), _protocol(prot), _receiver(),
-      _armed(false)
+      _armed(false), _rx_error(0), _rx_errors(0)
 {
     if (sem_init(&_sem, 0, 0) < 0) {
         return;
@@ -161,12 +162,34 @@ void ThreadedEthernetEngine::signal_handler(int)
 
 void ThreadedEthernetEngine::receive_loop()
 {
+    Ethernet::Frame frame;
+    struct sockaddr_ll from;
     while (_armed.load(std::memory_order_relaxed)) {
         while (sem_wait(&_sem) == -1 && errno == EINTR)
             ;
-        if (!_armed.load(std::memory_order_relaxed))
-            break;
+        while (_armed.load(std::memory_order_relaxed)) {
+            socklen_t len = sizeof(from);
+            ssize_t n =
+                ::recvfrom(_sockfd, &frame, sizeof(frame), 0,
+                           reinterpret_cast<struct sockaddr *>(&from), &len);
+            if (n == 0)
+                break;
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    break;
+                if (errno == EINTR)
+                    continue;
+                // An actual error:
+                _rx_error.store(errno, std::memory_order_relaxed);
+                _rx_errors.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
 
-        // TO IMPLEMENT
+            if (from.sll_pkttype == PACKET_OUTGOING ||
+                n < Ethernet::HEADER_SIZE)
+                continue;
+
+            receive(reinterpret_cast<void *>(&frame), n);
+        }
     }
 }

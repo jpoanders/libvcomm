@@ -3,28 +3,26 @@
 
 #include <arpa/inet.h>
 
-#include "traits.h"
-#include "ethernet.h"
+#include "libvcomm/traits.h"
+#include "libvcomm/net/ethernet.h"
 #include "buffer.h"
-#include "observer.h"
+#include "libvcomm/observer.h"
 
 template <typename Engine>
 class NIC : public Ethernet,
-            public Conditionally_Data_Observed<::Buffer<Ethernet::Frame>,
+            public Conditionally_Data_Observed<Buffer<Ethernet::Frame>,
                                                Ethernet::Protocol>,
             private Engine
 {
 public:
-
     static const unsigned int BUFFER_SIZE =
         Traits<Ethernet>::SEND_BUFFERS + Traits<Ethernet>::RECEIVE_BUFFERS;
 
     typedef Ethernet::Address Address;
-    typedef Ethernet::Protocol Protocol_Number;
-    typedef ::Buffer<Ethernet::Frame> Buffer;
-
-    typedef Conditional_Data_Observer<Buffer, Protocol_Number> Observer;
-    typedef Conditionally_Data_Observed<Buffer, Protocol_Number> Observed;
+    typedef Ethernet::Protocol ProtocolNumber;
+    typedef Buffer<Ethernet::Frame> Buffer;
+    typedef Conditional_Data_Observer<Buffer, ProtocolNumber> Observer;
+    typedef Conditionally_Data_Observed<Buffer, ProtocolNumber> Observed;
 
     explicit NIC(const char * iface = Traits<Ethernet>::INTERFACE);
     ~NIC();
@@ -32,12 +30,14 @@ public:
     NIC(const NIC &) = delete;
     NIC & operator=(const NIC &) = delete;
 
-    bool valid() const { return Engine::engine_valid() && _armed; }
+    bool valid() const { return Engine::valid() && _armed; }
 
-    int send(Address dst, Protocol_Number prot, const void * data,
-             unsigned int size);
+    // int send(Ethernet::Address dst, Ethernet::Protocol prot, const void *
+    // data,
+    //          unsigned int size);
 
-    Buffer * alloc(Address dst, Protocol_Number prot, unsigned int size);
+    // allocate a SEND buffer with <size> payload bytes
+    Buffer * alloc(Address dst, ProtocolNumber prot, unsigned int size);
 
     int send(Buffer * buf);
 
@@ -47,12 +47,21 @@ public:
                   unsigned int size);
 
     const Address & address();
-    // void address(Address address);
 
     const Statistics & statistics() { return _statistics; }
 
 private:
-    void handle(Ethernet::Frame * frame, unsigned int size) override;
+    enum class BufferType
+    {
+        SEND,
+        RECEIVE
+    };
+
+    void receive(void * data, unsigned int size) override;
+
+    Buffer * alloc_by_type(BufferType type, Address src, Address dst,
+                           ProtocolNumber prot, unsigned int frame_size);
+
     Statistics _statistics;
     Buffer _buffer[BUFFER_SIZE];
     bool _armed;
@@ -63,52 +72,45 @@ NIC<Engine>::NIC(const char * iface)
     : Engine(iface, Traits<Ethernet>::PROTOCOL_NUMBER), _statistics(),
       _buffer(), _armed(false)
 {
-    if (Engine::engine_valid())
-        _armed = Engine::engine_start();
+    if (Engine::valid())
+        _armed = Engine::start();
 }
 
 template <typename Engine> NIC<Engine>::~NIC()
 {
-    Engine::engine_stop();
+    Engine::stop();
     _armed = false;
 }
 
-template <typename Engine>
-int NIC<Engine>::send(Address dst, Protocol_Number prot, const void * data,
-                      unsigned int size)
-{
-    Buffer * buf = alloc(dst, prot, size);
-    if (!buf)
-        return -1;
-    std::memcpy(buf->frame()->data, data, size);
-    return send(buf);
-}
-
-// no use case for a synchronous reception method yet
 // template <typename Engine>
-// int NIC<Engine>::receive(Address * src, Protocol_Number * prot, void * data,
-//                         unsigned int size)
+// int NIC<Engine>::send(Ethernet::Address dst, Ethernet::Protocol prot,
+//                       const void * data, unsigned int size)
 //{
-//    // The PDF provides for this synchronous method.  In the
-//    // Observer-oriented architecture it is redundant with the
-//    handle()/notify()
-//    // pair; implemented only if needed
-//    (void)src;
-//    (void)prot;
-//    (void)data;
-//    (void)size;
-//    return -1;
-//}
+//     Buffer * buf =
+//         alloc(BufferType::SEND, dst, prot, Ethernet::HEADER_SIZE + size);
+//     if (!buf)
+//         return -1;
+//     std::memcpy(buf->frame()->data, data, size);
+//     return send(buf);
+// }
 
 template <typename Engine>
 typename NIC<Engine>::Buffer *
-NIC<Engine>::alloc(Address dst, Protocol_Number prot, unsigned int size)
+NIC<Engine>::alloc_by_type(BufferType type, Address src, Address dst,
+                           ProtocolNumber prot, unsigned int size)
 {
-    for (unsigned int i = 0; i < Traits<Ethernet>::SEND_BUFFERS; i++) {
+    unsigned int begin =
+        (type == BufferType::SEND) ? 0 : Traits<Ethernet>::SEND_BUFFERS;
+
+    unsigned int end = (type == BufferType::SEND)
+                           ? Traits<Ethernet>::SEND_BUFFERS
+                           : BUFFER_SIZE;
+
+    for (unsigned int i = begin; i < end; i++) {
         if (_buffer[i].lock()) {
             Ethernet::Frame * f = _buffer[i].frame();
             f->dst = dst;
-            f->src = Engine::engine_address();
+            f->src = src;
             f->prot = htons(prot);
             _buffer[i].size(Ethernet::HEADER_SIZE + size);
             return &_buffer[i];
@@ -117,9 +119,16 @@ NIC<Engine>::alloc(Address dst, Protocol_Number prot, unsigned int size)
     return 0;
 }
 
+template <typename Engine>
+typename NIC<Engine>::Buffer *
+NIC<Engine>::alloc(Address dst, ProtocolNumber prot, unsigned int size)
+{
+    alloc_by_type(BufferType::SEND, Engine::address(), dst, prot, size);
+}
+
 template <typename Engine> int NIC<Engine>::send(Buffer * buf)
 {
-    int ret = Engine::engine_send(buf->frame(), buf->size());
+    int ret = Engine::send(buf->frame(), buf->size());
     if (ret > 0) {
         _statistics.tx_packets++;
         _statistics.tx_bytes += ret;
@@ -144,8 +153,8 @@ int NIC<Engine>::unmarshal(Buffer * buf, Address * src, Address * dst,
     if (dst)
         *dst = f->dst;
 
-    unsigned int payload_bytes = buf->size() - Ethernet::HEADER_SIZE;
-    unsigned int to_copy = (payload_bytes < size) ? payload_bytes : size;
+    unsigned int payload_size = buf->size() - Ethernet::HEADER_SIZE;
+    unsigned int to_copy = (payload_size < size) ? payload_size : size;
     std::memcpy(data, f->data, to_copy);
     return static_cast<int>(to_copy);
 }
@@ -153,48 +162,35 @@ int NIC<Engine>::unmarshal(Buffer * buf, Address * src, Address * dst,
 template <typename Engine>
 const typename NIC<Engine>::Address & NIC<Engine>::address()
 {
-    return Engine::engine_address();
+    return Engine::address();
 }
-
-// no use case for this setter yet
-// template <typename Engine> void NIC<Engine>::address(Address address)
-//{
-//    (void)address;
-//}
 
 // since alloc() fills in a SEND header, this method allocs a reception buffer.
 template <typename Engine>
-void NIC<Engine>::handle(Ethernet::Frame * frame, unsigned int size)
+void NIC<Engine>::receive(void * data, unsigned int size)
 {
+    Ethernet::Frame * frame = reinterpret_cast<Ethernet::Frame *>(data);
     // Do not trust the Engine's filtering: NIC must hold for any Engine.
     if (size < Ethernet::HEADER_SIZE || size > sizeof(Ethernet::Frame))
         return;
 
-    const unsigned int payload = size - Ethernet::HEADER_SIZE;
+    const unsigned int payload_size = size - Ethernet::HEADER_SIZE;
 
     // The RX HALF, and only it.  See the note on the pool split above alloc().
     Buffer * buf = 0;
-    for (unsigned int i = Traits<Ethernet>::SEND_BUFFERS; i < BUFFER_SIZE;
-         i++) {
-        if (_buffer[i].lock()) {
-            buf = &_buffer[i];
-            break;
-        }
-    }
+
+    buf = alloc_by_type(BufferType::RECEIVE, frame->src, frame->dst,
+                        frame->prot, payload_size);
 
     if (!buf) {
         _statistics.rx_dropped++; // no buffer
         return;
     }
 
-    Ethernet::Frame * f = buf->frame();
-    f->dst = frame->dst;
-    f->src = frame->src;
-    f->prot = frame->prot; // stays in network order, as alloc() leaves it
-    std::memcpy(f->data, frame->data, payload);
-    buf->size(size); // total, header included
+    Ethernet::Frame * buf_frame = buf->frame();
+    std::memcpy(buf_frame->data, frame->data, payload_size);
 
-    if (Observed::notify(ntohs(f->prot), buf)) {
+    if (Observed::notify(ntohs(buf_frame->prot), buf)) {
         _statistics.rx_packets++;
         _statistics.rx_bytes += size;
     } else {

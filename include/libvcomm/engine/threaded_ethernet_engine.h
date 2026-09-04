@@ -5,7 +5,7 @@
 #include <csignal>
 #include <semaphore.h>
 #include <thread>
-#include "../net/ethernet.h"
+#include "libvcomm/net/ethernet.h"
 #include "engine.h"
 
 class ThreadedEthernetEngine : public Engine
@@ -29,6 +29,17 @@ public:
 
     bool valid() const { return _sockfd >= 0; }
 
+    unsigned int engine_rx_errors() const
+    {
+        return static_cast<unsigned int>(
+            _rx_errors.load(std::memory_order_relaxed));
+    }
+
+    int engine_rx_error() const
+    {
+        return static_cast<int>(_rx_error.load(std::memory_order_relaxed));
+    }
+
 private:
     static void signal_handler(int);
 
@@ -40,6 +51,8 @@ private:
     Ethernet::Protocol _protocol; // EtherType, in HOST order
     std::thread _receiver;
     std::atomic<bool> _armed;
+    std::atomic<int> _rx_error;
+    std::atomic<unsigned int> _rx_errors;
 
     // this currently limits each process to have only ONE instance of this
     // class

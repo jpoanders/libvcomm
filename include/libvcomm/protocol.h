@@ -3,19 +3,19 @@
 
 #include <cstring>
 #include "traits.h"
-#include "ethernet.h"
+#include "net/ethernet.h"
 #include "observer.h"
 
 template <typename NIC_T> class Protocol : private NIC_T::Observer
 {
 public:
     typedef typename NIC_T::Buffer Buffer;
-    typedef typename NIC_T::Address Physical_Address;
-    typedef typename NIC_T::Protocol_Number Protocol_Number;
+    typedef typename NIC_T::Address PhysicalAddress;
+    typedef typename NIC_T::ProtocolNumber ProtocolNumber;
 
     typedef unsigned short Port;
 
-    static const Protocol_Number PROTO = Traits<Ethernet>::PROTOCOL_NUMBER;
+    static const ProtocolNumber PROTO = Traits<Ethernet>::PROTOCOL_NUMBER;
 
     typedef Concurrent_Observer<Buffer, Port> Observer;
     typedef Concurrent_Observed<Buffer, Port> Observed;
@@ -30,10 +30,10 @@ public:
 
         Address() : _paddr(), _port(0) {}
         Address(const Null &) : _paddr(), _port(0) {}
-        Address(Physical_Address paddr, Port port) : _paddr(paddr), _port(port)
+        Address(PhysicalAddress paddr, Port port) : _paddr(paddr), _port(port)
         {}
 
-        const Physical_Address & paddr() const { return _paddr; }
+        const PhysicalAddress & paddr() const { return _paddr; }
         Port port() const { return _port; }
 
         operator bool() const { return (_paddr || _port); }
@@ -49,7 +49,7 @@ public:
         }
 
     private:
-        Physical_Address _paddr;
+        PhysicalAddress _paddr;
         Port _port;
     } __attribute__((packed));
 
@@ -60,7 +60,7 @@ public:
 
         Port _from_port;
         Port _to_port;
-        unsigned short _length; 
+        unsigned short _length;
     } __attribute__((packed));
 
     static const unsigned int MTU = Ethernet::MTU - sizeof(Header);
@@ -94,8 +94,7 @@ public:
     void detach(Observer * obs, const Address & address);
 
 private:
-
-   void update(const Protocol_Number & prot, Buffer * buf) override;
+    void update(const ProtocolNumber & prot, Buffer * buf) override;
 
     NIC_T * _nic;
     Observed _observed;
@@ -138,7 +137,7 @@ template <typename NIC_T>
 int Protocol<NIC_T>::receive(Buffer * buf, Address * from, void * data,
                              unsigned int size)
 {
-    Physical_Address src_mac;
+    PhysicalAddress src_mac;
     unsigned char raw_payload[Ethernet::MTU];
     int payload_bytes =
         _nic->unmarshal(buf, &src_mac, 0, raw_payload, sizeof(raw_payload));
@@ -178,7 +177,7 @@ void Protocol<NIC_T>::detach(Observer * obs, const Address & address)
 }
 
 template <typename NIC_T>
-void Protocol<NIC_T>::update(const Protocol_Number & prot, Buffer * buf)
+void Protocol<NIC_T>::update(const ProtocolNumber & prot, Buffer * buf)
 {
     (void)prot;
 

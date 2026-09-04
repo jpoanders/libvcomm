@@ -2,7 +2,7 @@
 #define LIBVCOMM_ETHERNET_ENGINE_H
 
 #include <csignal>
-#include "../net/ethernet.h"
+#include "libvcomm/net/ethernet.h"
 
 class EthernetEngine
 {

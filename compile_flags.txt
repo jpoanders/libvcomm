@@ -1,0 +1,5 @@
+-x
+c++-header
+-std=c++17
+-Iinclude
+-Wall

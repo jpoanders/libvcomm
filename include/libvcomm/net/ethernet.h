@@ -2,7 +2,7 @@
 #define LIBVCOMM_ETHERNET_H
 
 #include <cstring>
-#include "../traits.h"
+#include "libvcomm/traits.h"
 
 class Ethernet
 {
