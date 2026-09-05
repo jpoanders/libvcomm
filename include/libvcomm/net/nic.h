@@ -57,7 +57,9 @@ private:
         RECEIVE
     };
 
-    void receive(void * data, unsigned int size) override;
+    int send(const void * data, unsigned int size) override;
+
+    int receive(void * data, unsigned int size) override;
 
     Buffer * alloc_by_type(BufferType type, Address src, Address dst,
                            ProtocolNumber prot, unsigned int frame_size);
@@ -123,7 +125,13 @@ template <typename Engine>
 typename NIC<Engine>::Buffer *
 NIC<Engine>::alloc(Address dst, ProtocolNumber prot, unsigned int size)
 {
-    alloc_by_type(BufferType::SEND, Engine::address(), dst, prot, size);
+    return alloc_by_type(BufferType::SEND, Engine::address(), dst, prot, size);
+}
+
+template <typename Engine>
+int NIC<Engine>::send(const void * data, unsigned int size)
+{
+    return Engine::send(data, size);
 }
 
 template <typename Engine> int NIC<Engine>::send(Buffer * buf)
@@ -167,12 +175,12 @@ const typename NIC<Engine>::Address & NIC<Engine>::address()
 
 // since alloc() fills in a SEND header, this method allocs a reception buffer.
 template <typename Engine>
-void NIC<Engine>::receive(void * data, unsigned int size)
+int NIC<Engine>::receive(void * data, unsigned int size)
 {
     Ethernet::Frame * frame = reinterpret_cast<Ethernet::Frame *>(data);
     // Do not trust the Engine's filtering: NIC must hold for any Engine.
     if (size < Ethernet::HEADER_SIZE || size > sizeof(Ethernet::Frame))
-        return;
+        return -1;
 
     const unsigned int payload_size = size - Ethernet::HEADER_SIZE;
 
@@ -180,23 +188,24 @@ void NIC<Engine>::receive(void * data, unsigned int size)
     Buffer * buf = 0;
 
     buf = alloc_by_type(BufferType::RECEIVE, frame->src, frame->dst,
-                        frame->prot, payload_size);
+                        ntohs(frame->prot), payload_size);
 
     if (!buf) {
         _statistics.rx_dropped++; // no buffer
-        return;
+        return -2;
     }
 
     Ethernet::Frame * buf_frame = buf->frame();
     std::memcpy(buf_frame->data, frame->data, payload_size);
 
-    if (Observed::notify(ntohs(buf_frame->prot), buf)) {
-        _statistics.rx_packets++;
-        _statistics.rx_bytes += size;
-    } else {
+    if (!Observed::notify(ntohs(buf_frame->prot), buf)) {
         _statistics.rx_dropped++; // no observer for this EtherType
         free(buf);
+        return -2;
     }
+    _statistics.rx_packets++;
+    _statistics.rx_bytes += size;
+    return size;
 }
 
 #endif // LIBVCOMM_NIC_H

@@ -1,4 +1,4 @@
-#include "../include/engine/threaded_ethernet_engine.h"
+#include "libvcomm/engine/threaded_ethernet_engine.h"
 
 #include <atomic>
 #include <sys/socket.h>
@@ -12,12 +12,16 @@
 #include <cstring>
 #include <cerrno>
 
+// maybe not the best approach, but it works
+static sem_t * _sem_ptr = nullptr;
+
 ThreadedEthernetEngine::ThreadedEthernetEngine(const char * iface,
                                                Ethernet::Protocol prot)
     : _sockfd(-1), _ifindex(0), _address(), _protocol(prot), _receiver(),
       _armed(false), _rx_error(0), _rx_errors(0)
 {
-    if (sem_init(&_sem, 0, 0) < 0) {
+    _sem_ptr = &_sem;
+    if (sem_init(_sem_ptr, 0, 0) < 0) {
         return;
     }
 
@@ -84,7 +88,7 @@ ThreadedEthernetEngine::~ThreadedEthernetEngine()
         stop();
     if (_sockfd >= 0)
         ::close(_sockfd);
-    sem_destroy(&_sem);
+    sem_destroy(_sem_ptr);
 }
 
 bool ThreadedEthernetEngine::start()
@@ -106,13 +110,13 @@ bool ThreadedEthernetEngine::start()
     // than 0? Should this verification actually be made? Think about the stop()
     // implementation before removing this:
     int sval;
-    if (sem_getvalue(&_sem, &sval) < 0) {
+    if (sem_getvalue(_sem_ptr, &sval) < 0) {
         _armed.exchange(false);
         return false;
     }
 
     while (sval != 0) {
-        sem_wait(&_sem);
+        sem_wait(_sem_ptr);
     }
     _receiver = std::thread(&ThreadedEthernetEngine::receive_loop, this);
     return true;
@@ -133,7 +137,7 @@ void ThreadedEthernetEngine::stop()
     _armed.exchange(false);
 
     if (_receiver.joinable()) {
-        sem_post(&_sem);
+        sem_post(_sem_ptr);
         _receiver.join();
     }
 }
@@ -157,7 +161,7 @@ int ThreadedEthernetEngine::send(const void * data, unsigned int size)
 
 void ThreadedEthernetEngine::signal_handler(int)
 {
-    sem_post(&_sem);
+    sem_post(_sem_ptr);
 }
 
 void ThreadedEthernetEngine::receive_loop()
@@ -165,7 +169,7 @@ void ThreadedEthernetEngine::receive_loop()
     Ethernet::Frame frame;
     struct sockaddr_ll from;
     while (_armed.load(std::memory_order_relaxed)) {
-        while (sem_wait(&_sem) == -1 && errno == EINTR)
+        while (sem_wait(_sem_ptr) == -1 && errno == EINTR)
             ;
         while (_armed.load(std::memory_order_relaxed)) {
             socklen_t len = sizeof(from);

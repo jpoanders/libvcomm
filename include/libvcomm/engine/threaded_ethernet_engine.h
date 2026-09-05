@@ -53,10 +53,7 @@ private:
     std::atomic<bool> _armed;
     std::atomic<int> _rx_error;
     std::atomic<unsigned int> _rx_errors;
-
-    // this currently limits each process to have only ONE instance of this
-    // class
-    static sem_t _sem;
+    sem_t _sem;
 };
 
 #endif // LIBVCOMM_RAW_SOCKET_ENGINE_H

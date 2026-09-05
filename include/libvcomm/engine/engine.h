@@ -3,12 +3,11 @@
 
 class Engine
 {
-public:
+protected:
     virtual ~Engine() = default;
 
     virtual int send(const void * data, unsigned int size) = 0;
 
-protected:
     virtual int receive(void * data, unsigned size) = 0;
 };
 
